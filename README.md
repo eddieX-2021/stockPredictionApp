@@ -1,3 +1,4 @@
 # stockPredictionApp
 
-hello
+hello,
+eddie is gay
