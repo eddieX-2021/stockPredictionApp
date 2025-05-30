@@ -1,8 +1,9 @@
 # stockPredictionApp
 
 set up:
-create env 
-python3 -m venv venv
-window:
-acitvate: 
-.\venv\Scripts\activate
+conda create -p venv python==3.11 -y
+
+
+conda activate "C:\Users\eddie\Documents\Summer Project\stockPredictionApp\venv"
+
+conda deactivate
