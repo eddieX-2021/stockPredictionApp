@@ -1,0 +1,30 @@
+import os
+from typing import List
+from dotenv import load_dotenv
+import praw
+dotenv_path = os.path.normpath(
+    os.path.join(os.path.dirname(__file__),'..', '..', '..', '.env')
+)
+load_dotenv(dotenv_path)
+
+CLIENT_ID     = os.getenv('REDDIT_CLIENT_ID')
+CLIENT_SECRET = os.getenv('REDDIT_CLIENT_SECRET')
+USER_AGENT    = os.getenv('REDDIT_USER_AGENT')
+reddit = praw.Reddit(
+    client_id=CLIENT_ID,
+    client_secret=CLIENT_SECRET,
+    user_agent=USER_AGENT
+)
+
+def fetch_reddit(query: str, limit: int = 5) -> List[str]:
+    # PRAW’s .search() may raise exceptions if Reddit is down
+    try:
+        results = reddit.subreddit('all').search(
+            query,
+            sort='new',
+            limit=limit,
+            syntax='lucene'    # or 'plain'
+        )
+        return [post.title for post in results]
+    except Exception:
+        return []
