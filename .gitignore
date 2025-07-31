@@ -1,28 +1,52 @@
-# Ignore Python virtual environments
-venv/
-
-# Bytecode cache
+# ─── Python bytecode ───────────────────────────────────────────
 __pycache__/
 *.py[cod]
 
-# Jupyter Notebook checkpoints
-.ipynb_checkpoints/
-
-# Environment variables and secrets
+# ─── Virtual env & dotenv ───────────────────────────────────────
+venv/
 .env
+.env.*
 
-# OS files
-.DS_Store
-Thumbs.db
+# ─── Data directories ───────────────────────────────────────────
+# financial‐statement data
+ai_stock_backend/app/financial_statement/data/
+# headline data
+ai_stock_backend/app/headline/data/
+# reddit data
+ai_stock_backend/app/reddit/data/
 
-# Logs
+# ─── Individual large files ────────────────────────────────────
+# model_data.parquet and any other parquet
+**/model_data.parquet
+**/*.parquet
+# any large CSVs
+**/*.csv
+
+# ─── Model artifacts ────────────────────────────────────────────
+ai_stock_backend/app/financial_statement/models/
+
+# ─── Jupyter checkpoints & logs ─────────────────────────────────
+.ipynb_checkpoints/
 *.log
 
-# VS Code settings
+# ─── IDE files ──────────────────────────────────────────────────
 .vscode/
+.idea/
 
-# Pytest cache
-.pytest_cache/
+# ─── Next.js / Node ─────────────────────────────────────────────
+node_modules/
+.next/
+out/
+dist/
 
-# MyPy cache
-.mypy_cache/
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+npm-debug.log*
+yarn-debug.log*
+
+# ─── OS files ───────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
