@@ -1,28 +1,57 @@
-# Ignore Python virtual environments
-venv/
-
-# Bytecode cache
+# ─── Python ────────────────────────────────────────────────────
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
+*$py.class
 
-# Jupyter Notebook checkpoints
-.ipynb_checkpoints/
+# Virtual envs
+venv/
+.env                # if you have a project-level .env
+.env.*              # dotenv overrides
 
-# Environment variables and secrets
-.env
+# Model/data artifacts
+*.parquet
+*.csv
+app/financial_statement/data/
+app/financial_statement/models/
 
-# OS files
-.DS_Store
-Thumbs.db
-next-app/node_modules/
+# Jupyter
+.ipynb_checkpoints
+
 # Logs
 *.log
 
-# VS Code settings
+# ─── VSCode / IDEs ───────────────────────────────────────────
 .vscode/
+.idea/
 
-# Pytest cache
-.pytest_cache/
+# ─── Node / Next.js ──────────────────────────────────────────
+# dependencies
+node_modules/
 
-# MyPy cache
-.mypy_cache/
+# build output
+.next/
+out/
+dist/
+
+# env files
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# next.js cache
+.next/
+.cache/
+
+# debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ─── OS ────────────────────────────────────────────────────────
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
