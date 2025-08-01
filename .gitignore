@@ -59,3 +59,7 @@ coverage/
 *.cover
 *.py,cover
 htmlcov/
+
+
+/ai_stock_backend/catboost_info/
+**/catboost_info/
