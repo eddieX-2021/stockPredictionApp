@@ -1,52 +1,61 @@
-# ─── Python bytecode ───────────────────────────────────────────
-__pycache__/
-*.py[cod]
-
-# ─── Virtual env & dotenv ───────────────────────────────────────
+# ─── Environment & Secrets ───────────────────────────────────────
+# dotenv files anywhere
+*.env
+*.env.*
+# Python virtualenvs
 venv/
 .env
-.env.*
-
-# ─── Data directories ───────────────────────────────────────────
-# financial‐statement data
-ai_stock_backend/app/financial_statement/data/
-# headline data
-ai_stock_backend/app/headline/data/
-# reddit data
-ai_stock_backend/app/reddit/data/
-
-# ─── Individual large files ────────────────────────────────────
-# model_data.parquet and any other parquet
-**/model_data.parquet
-**/*.parquet
-# any large CSVs
-**/*.csv
-
-# ─── Model artifacts ────────────────────────────────────────────
-ai_stock_backend/app/financial_statement/models/
-
-# ─── Jupyter checkpoints & logs ─────────────────────────────────
-.ipynb_checkpoints/
-*.log
-
-# ─── IDE files ──────────────────────────────────────────────────
-.vscode/
-.idea/
-
-# ─── Next.js / Node ─────────────────────────────────────────────
-node_modules/
-.next/
-out/
-dist/
-
 .env.local
 .env.development.local
 .env.test.local
 .env.production.local
 
+# ─── Python ──────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
+*.log
+
+# ─── Data & Models ───────────────────────────────────────────────
+# Financial‐statement data & models
+ai_stock_backend/app/financial_statement/data/
+ai_stock_backend/app/financial_statement/models/
+# Headline & Reddit data
+ai_stock_backend/app/headline/data/
+ai_stock_backend/app/reddit/data/
+# Catch any CSVs & Parquets
+**/*.csv
+**/*.parquet
+
+# ─── Node / Next.js ──────────────────────────────────────────────
+node_modules/
+.next/
+out/
+dist/
 npm-debug.log*
 yarn-debug.log*
+yarn-error.log*
 
-# ─── OS files ───────────────────────────────────────────────────
+# Cache folders
+.cache/
+
+# ─── IDEs & Editors ──────────────────────────────────────────────
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# ─── OS Files ────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+
+# ─── Miscellaneous ───────────────────────────────────────────────
+coverage/
+*.cover
+*.py,cover
+htmlcov/

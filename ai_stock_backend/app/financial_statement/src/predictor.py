@@ -1,35 +1,32 @@
-# predictor.py
 import pandas as pd
 import joblib
 from pathlib import Path
-from fetch_fin import fetch_financials
+from .fetch_fin import fetch_financials
 
-def predict_direction(ticker: str):
-    # Paths
-    HERE      = Path(__file__).resolve().parent
-    FIN_ROOT  = HERE.parent
-    MODEL_F   = FIN_ROOT / "models" / "stock_dir_model_logreg_tuned.pkl"
+def predict_stock_movement(ticker: str) -> tuple[str, float]:
+    """
+    Returns (direction, confidence) for the given ticker,
+    where direction is "UP" or "DOWN" and confidence is a float [0,1].
+    """
+    # ── locate model artifact ─────────────────────────────────────────
+    HERE     = Path(__file__).resolve().parent
+    FIN_ROOT = HERE.parent
+    MODEL_F  = FIN_ROOT / "models" / "stock_dir_model_logreg_tuned.pkl"
     if not MODEL_F.exists():
-        print("ERROR: model file not found at", MODEL_F)
-        return
+        raise FileNotFoundError(f"Model not found at {MODEL_F}")
 
-    # Load model + feature list
+    # ── load model + feature list ──────────────────────────────────────
     art      = joblib.load(MODEL_F)
     model    = art["model"]
-    features = art["features"]  # e.g. ["TotalRevenue_chg", ...]
+    features = art["features"]          # e.g. ["TotalRevenue_chg", ...]
     raw_feats = [f[:-4] for f in features]
 
-    # Fetch financials via yfinance
-    try:
-        fin = fetch_financials(ticker)
-    except Exception as e:
-        print("❌ Fetch error:", e)
-        return
-
+    # ── fetch the two most-recent years of financials ──────────────────
+    fin = fetch_financials(ticker)
     latest = fin["latest"]
     prev   = fin["prev"]
 
-    # Build YoY–growth vector
+    # ── compute year-over-year growth for each feature ────────────────
     growth = {}
     for feat, raw in zip(features, raw_feats):
         v2 = latest.get(raw)
@@ -41,13 +38,9 @@ def predict_direction(ticker: str):
 
     Xnew = pd.DataFrame([growth])
 
-    # Predict
-    try:
-        pred = model.predict(Xnew)[0]
-        prob = model.predict_proba(Xnew)[0, int(pred)]
-    except Exception as e:
-        print("❌ Prediction error:", e)
-        return
+    # ── predict direction + probability ───────────────────────────────
+    pred = model.predict(Xnew)[0]
+    prob = model.predict_proba(Xnew)[0, int(pred)]
 
     direction = "UP" if pred == 1 else "DOWN"
-    print(f"{ticker.upper()} → {direction} (conf {prob:.1%})")
+    return direction, float(prob)
