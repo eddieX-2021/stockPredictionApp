@@ -108,6 +108,7 @@ export default function Home() {
   // Update suggestions when query changes
   useEffect(() => {
     setSuggestions(getSuggestions(query));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, stockData]);
 
   // Autosuggest event handlers
@@ -175,6 +176,7 @@ export default function Home() {
           getSuggestionValue={(suggestion: Stock) => suggestion.symbol}
           renderSuggestion={renderSuggestion}
           inputProps={inputProps}
+          onSuggestionSelected={onSuggestionSelected} 
           theme={{
             container: "relative",
             suggestionsContainer:
