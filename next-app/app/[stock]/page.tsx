@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useParams } from "next/navigation";
+export const dynamic = "force-dynamic";
 
 type NewsItem = { headline: string; sentiment: string };
 type RedditItem = { post: string; sentiment: string };
