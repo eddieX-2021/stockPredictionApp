@@ -1,7 +1,9 @@
 # stockPredictionApp
 
-https://stock-prediction-app-two.vercel.app/ 
+
 A full-stack, machine learning–powered web application that forecasts stock price movements by combining historical data, financial sentiment analysis, and news headlines. Built with a Python/FastAPI backend and a Next.js frontend, the app delivers real-time predictions and sentiment insights to help users make data-driven investment decisions.
+
+https://stock-prediction-app-two.vercel.app/ 
 
 ---
 
@@ -127,4 +129,5 @@ Our Stock Prediction App combines financial data, news sentiment, and cutting-ed
 - [US Stocks Fundamentals (Kaggle)](https://www.kaggle.com/datasets/usfundamentals/us-stocks-fundamentals)
 
 ---
+
 
