@@ -2,6 +2,7 @@
 export const dynamic = "force-dynamic";
 import { useState, useEffect } from "react";
 import { useParams } from "next/navigation";
+import Link from "next/link";
 
 type NewsItem = { headline: string; sentiment: string };
 type RedditItem = { post: string; sentiment: string };
@@ -72,6 +73,13 @@ export default function StockPage() {
 
   return (
     <div className="min-h-screen bg-gray-50 p-8">
+      {/* Home Button */}
+      <Link href="/" className="absolute top-4 left-4">
+        <button className="bg-gray-50 border-2 border-black text-black font-semibold px-4 py-2 rounded hover:bg-gray-100 transition">
+          Home
+        </button>
+      </Link>
+
       <h1 className="text-4xl font-bold mb-8 text-center">{T} Dashboard</h1>
 
       {/* 1. Price Prediction */}
