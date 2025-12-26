@@ -20,12 +20,65 @@ def fetch_raw_stock_data(ticker, start_date, end_date):
         return None
 
 
+def fetch_market_context(start_date, end_date):
+    """
+    Fetch only the most critical market indicators.
+    Limited to 3 sources to avoid overfitting and multicollinearity.
+    """
+    try:
+        # S&P 500 (market benchmark) - ESSENTIAL
+        spy = yf.download("SPY", start=start_date, end=end_date, progress=False, auto_adjust=True)
+        if isinstance(spy.columns, pd.MultiIndex):
+            spy.columns = spy.columns.get_level_values(0)
+        
+        # VIX (fear gauge) - ESSENTIAL for volatility context
+        vix = yf.download("^VIX", start=start_date, end=end_date, progress=False, auto_adjust=True)
+        if isinstance(vix.columns, pd.MultiIndex):
+            vix.columns = vix.columns.get_level_values(0)
+        
+        return {
+            'SPY': spy,
+            'VIX': vix
+        }
+    except Exception as e:
+        print(f"Warning: Could not fetch market context: {e}")
+        return None
+
+
 def generate_features(stock_data):
     """
     Generate features optimized for predicting direction and magnitude of price changes.
-    Focus on momentum, volatility, and pattern recognition.
+    Now includes MINIMAL market context (3-4 features only) to avoid overfitting.
     """
     try:
+        # Get date range from stock data
+        start_date = stock_data.index[0]
+        end_date = stock_data.index[-1]
+        
+        # Fetch market context data
+        market_data = fetch_market_context(start_date, end_date)
+        
+        # ==========================================
+        # MARKET CONTEXT FEATURES (MINIMAL - 4 features)
+        # ==========================================
+        
+        if market_data:
+            # SPY (S&P 500) - THE most important market indicator
+            spy = market_data['SPY']
+            spy_returns = spy['Close'].pct_change().reindex(stock_data.index, method='ffill')
+            stock_data['SPY_Return'] = spy_returns
+            
+            # Relative strength to market (KEY FEATURE)
+            # This tells us if stock is outperforming or underperforming
+            stock_data['Relative_Strength'] = stock_data['Close'].pct_change() - spy_returns
+            
+            # VIX (fear index) - market volatility context
+            vix = market_data['VIX']
+            stock_data['VIX'] = vix['Close'].reindex(stock_data.index, method='ffill')
+            
+            # Market stress indicator (VIX spike = danger)
+            stock_data['Market_Stress'] = (stock_data['VIX'] > 25).astype(float)
+        
         # ==========================================
         # PRICE MOMENTUM & TRENDS
         # ==========================================
@@ -97,7 +150,7 @@ def generate_features(stock_data):
         # Volume change
         stock_data['Volume_Change'] = stock_data['Volume'].pct_change()
         
-        # Price-Volume relationship
+        # Price-Volume relationship (KEY: big moves on high volume are more reliable)
         stock_data['PV_Trend'] = stock_data['Return_1d'] * stock_data['Volume_Ratio']
         
         # On-Balance Volume (OBV) - cumulative volume indicator
@@ -115,7 +168,7 @@ def generate_features(stock_data):
         loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
         rs = gain / (loss + 1e-10)
         stock_data['RSI'] = 100 - (100 / (1 + rs))
-        stock_data['RSI_Normalized'] = (stock_data['RSI'] - 50) / 50  # Center around 0
+        stock_data['RSI_Normalized'] = (stock_data['RSI'] - 50) / 50
         
         # Stochastic Oscillator
         low_14 = stock_data['Low'].rolling(14).min()
@@ -150,7 +203,7 @@ def generate_features(stock_data):
         # PATTERN RECOGNITION FEATURES
         # ==========================================
         
-        # Consecutive up/down days
+        # Consecutive up/down days (momentum persistence)
         stock_data['Consec_Up'] = (stock_data['Close'] > stock_data['Close'].shift(1)).astype(int)
         stock_data['Consec_Up_Count'] = stock_data['Consec_Up'].groupby(
             (stock_data['Consec_Up'] != stock_data['Consec_Up'].shift()).cumsum()
@@ -159,7 +212,7 @@ def generate_features(stock_data):
         # Price acceleration (change in momentum)
         stock_data['Acceleration'] = stock_data['Return_1d'] - stock_data['Return_1d'].shift(1)
         
-        # Distance from highs/lows
+        # Distance from highs/lows (mean reversion signals)
         stock_data['High_52w'] = stock_data['High'].rolling(252).max()
         stock_data['Low_52w'] = stock_data['Low'].rolling(252).min()
         stock_data['Dist_From_High'] = (stock_data['High_52w'] - stock_data['Close']) / stock_data['High_52w']
@@ -192,6 +245,12 @@ def generate_features(stock_data):
             # Current price (anchor)
             'Close',
             
+            # MARKET CONTEXT (MINIMAL - only 4 features)
+            'SPY_Return',           # Market direction (most important!)
+            'Relative_Strength',    # Stock vs market performance
+            'VIX',                  # Market fear/volatility
+            'Market_Stress',        # Binary: high volatility regime
+            
             # Momentum features
             'Return_1d', 'Return_2d', 'Return_3d', 'Return_5d',
             'Return_10d', 'Return_20d',
@@ -222,6 +281,9 @@ def generate_features(stock_data):
             'Dist_From_High', 'Dist_From_Low'
         ]
         
+        # Filter out features that don't exist (in case market data fetch failed)
+        features = [f for f in features if f in stock_data.columns]
+        
         X = stock_data[features]
         y = stock_data['Target']
         
@@ -233,6 +295,9 @@ def generate_features(stock_data):
         if np.isinf(X.values).any():
             print("WARNING: Infinite values detected, replacing with 0")
             X = X.replace([np.inf, -np.inf], 0)
+        
+        market_feature_count = 4 if market_data else 0
+        print(f"✓ Generated {len(features)} features (including {market_feature_count} market context features)")
         
         return X, y, stock_data
         

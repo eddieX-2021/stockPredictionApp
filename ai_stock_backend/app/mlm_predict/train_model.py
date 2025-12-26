@@ -200,8 +200,10 @@ def train_stock_models(ticker, start_date, end_date):
     # y_price already contains next day's prices due to shift(-1) in generate_features
     y_direction = (y_price.values > current_prices).astype(int)
     
-    # Create magnitude target (percentage change)
-    y_magnitude = ((y_price.values - current_prices) / current_prices) * 100
+    # Create magnitude target (ABSOLUTE percentage change)
+    # This lets magnitude focus purely on move SIZE, not direction
+    pct_change = ((y_price.values - current_prices) / current_prices) * 100
+    y_magnitude = np.abs(pct_change)
 
     # Sequential split (60% train, 20% val, 20% test)
     n = len(X)
@@ -425,6 +427,7 @@ def train_stock_models(ticker, start_date, end_date):
     print(f"\nMagnitude Model: {best_mag_name}")
     print(f"  Val - R²: {mag_report[best_mag_name]['validation']['R²']:.4f}, MAE: {mag_report[best_mag_name]['validation']['MAE']:.3f}%")
     print(f"  Test - R²: {mag_report[best_mag_name]['test']['R²']:.4f}, MAE: {mag_report[best_mag_name]['test']['MAE']:.3f}%")
+    print(f"  Note: Predicting absolute % change (direction applied separately)")
     
     print(f"\nOverall Confidence: {confidence.upper()}")
     print("="*60)

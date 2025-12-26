@@ -13,25 +13,38 @@ To make predictions on new data:
     # Make prediction
     prediction = make_prediction(result, X_new)
     
+    # Display results
     print(f"Direction: {prediction['direction']}")
     print(f"Confidence: {prediction['direction_confidence']:.2%}")
-    print(f"Expected Change: {prediction['magnitude_pct']:.2f}%")
+    print(f"Final Prediction: {prediction['final_prediction_pct']:.2f}%")
+    
+    # Detailed breakdown:
+    print(f"Raw Magnitude: {prediction['raw_magnitude_pct']:.2f}%")
+    print(f"With Direction: {prediction['signed_magnitude_pct']:.2f}%")
+    print(f"Confidence Score: {prediction['confidence_score']:.2%}")
 
 INTERPRETATION:
 ---------------
-Direction Prediction:
-  • UP/DOWN: Predicted movement for next trading day
-  • Confidence: Probability (0.5-1.0, higher is better)
-    - > 0.7: Strong signal
-    - 0.6-0.7: Moderate signal
-    - 0.5-0.6: Weak signal
+Prediction Fields:
+  • direction: UP or DOWN
+  • direction_confidence: Probability of UP (0.5-1.0, higher = more confident)
+  • raw_magnitude_pct: Predicted move size (always positive, e.g., 1.5%)
+  • signed_magnitude_pct: Move with direction applied (e.g., +1.5% or -1.5%)
+  • final_prediction_pct: Confidence-scaled prediction (what to show users)
+  • confidence_score: How much to trust this prediction (0-1)
 
-Magnitude Prediction:
-  • Shows expected % change (positive or negative)
-  • Consider this alongside direction for complete picture
-  • MAE in test results shows typical prediction error
+How Confidence Scaling Works:
+  • 50% direction confidence (coin flip) → 0% predicted change
+  • 75% direction confidence (moderate) → 50% of magnitude
+  • 100% direction confidence (certain) → 100% of magnitude
 
-Overall Confidence:
+Example:
+  Direction: UP (0.85 confidence)
+  Raw Magnitude: 2.0%
+  Confidence Score: 0.70  [calculated as: |0.85 - 0.5| * 2]
+  Final Prediction: +1.4%  [calculated as: 2.0% * 0.70]
+
+Overall System Confidence:
   • HIGH: Both models performing well, reliable predictions
   • MEDIUM: Decent performance, use with caution
   • LOW: Uncertain predictions, consider external factors
@@ -48,6 +61,11 @@ from app.mlm_predict.train_model import (train_stock_models,
 def make_prediction(result, X_new):
     """
     Make a complete prediction using both direction and magnitude models.
+    Combines them intelligently:
+    1. Get direction (UP/DOWN) with confidence
+    2. Get magnitude (absolute % change)
+    3. Apply direction sign to magnitude
+    4. Scale by confidence (lower confidence = smaller predicted move)
     
     Args:
         result: Output from train_stock_models
@@ -59,7 +77,7 @@ def make_prediction(result, X_new):
     dir_info = result["direction"]
     mag_info = result["magnitude"]
     
-    # Use ensemble if available, otherwise use best single model
+    # Get direction prediction and confidence
     if dir_info["ensemble"]:
         direction_pred, direction_prob = predict_ensemble_direction(X_new, dir_info["ensemble"])
     else:
@@ -70,21 +88,58 @@ def make_prediction(result, X_new):
         else:
             direction_prob = direction_pred
     
+    # Get magnitude prediction (absolute value)
     if mag_info["ensemble"]:
         magnitude_pred = predict_ensemble_magnitude(X_new, mag_info["ensemble"])
     else:
         X_proc = mag_info["scaler"].transform(X_new) if mag_info["scaler"] else X_new
         magnitude_pred = mag_info["best_model"].predict(X_proc)
     
-    return {
-        "direction": ["DOWN", "UP"][direction_pred[0]] if len(direction_pred) == 1 else direction_pred,
-        "direction_confidence": direction_prob[0] if len(direction_prob) == 1 else direction_prob,
-        "magnitude_pct": magnitude_pred[0] if len(magnitude_pred) == 1 else magnitude_pred,
-        "using_ensemble": {
-            "direction": dir_info["ensemble"] is not None,
-            "magnitude": mag_info["ensemble"] is not None
+    # Ensure magnitude is positive (model should already output positive, but safety check)
+    magnitude_pred = np.abs(magnitude_pred)
+    
+    # Apply direction to magnitude
+    # direction_pred: 1 = UP, 0 = DOWN
+    # Convert to: 1 = UP (+), -1 = DOWN (-)
+    direction_sign = np.where(direction_pred == 1, 1, -1)
+    signed_magnitude = magnitude_pred * direction_sign
+    
+    # Scale magnitude by confidence
+    # direction_prob is probability of UP (0 to 1)
+    # Convert to confidence: how far from 0.5 (random guess)
+    # confidence = 0.5 → multiply by 0 (no confidence, predict 0% change)
+    # confidence = 1.0 → multiply by 1 (full confidence, use full magnitude)
+    confidence_score = np.abs(direction_prob - 0.5) * 2  # Scale to 0-1
+    scaled_magnitude = signed_magnitude * confidence_score
+    
+    # Handle single vs multiple predictions
+    if len(direction_pred) == 1:
+        return {
+            "direction": "UP" if direction_pred[0] == 1 else "DOWN",
+            "direction_confidence": float(direction_prob[0]),
+            "raw_magnitude_pct": float(magnitude_pred[0]),  # Absolute value
+            "signed_magnitude_pct": float(signed_magnitude[0]),  # With direction applied
+            "final_prediction_pct": float(scaled_magnitude[0]),  # Confidence-scaled
+            "confidence_score": float(confidence_score[0]),
+            "using_ensemble": {
+                "direction": dir_info["ensemble"] is not None,
+                "magnitude": mag_info["ensemble"] is not None
+            }
         }
-    }
+    else:
+        return {
+            "direction": ["UP" if d == 1 else "DOWN" for d in direction_pred],
+            "direction_confidence": direction_prob.tolist(),
+            "raw_magnitude_pct": magnitude_pred.tolist(),
+            "signed_magnitude_pct": signed_magnitude.tolist(),
+            "final_prediction_pct": scaled_magnitude.tolist(),
+            "confidence_score": confidence_score.tolist(),
+            "using_ensemble": {
+                "direction": dir_info["ensemble"] is not None,
+                "magnitude": mag_info["ensemble"] is not None
+            }
+        }
+
 
 
 def test_single_ticker(ticker, start_date, end_date):
@@ -184,6 +239,14 @@ def print_summary_table(summaries):
     print(f"\nHigh Confidence Count:   {(df['confidence'] == 'high').sum()}/{len(df)}")
     print(f"Medium Confidence Count: {(df['confidence'] == 'medium').sum()}/{len(df)}")
     print(f"Low Confidence Count:    {(df['confidence'] == 'low').sum()}/{len(df)}")
+    
+    print("\n" + "="*100)
+    print("PREDICTION METHODOLOGY:")
+    print("-" * 100)
+    print("✓ Magnitude models trained on ABSOLUTE values (no directional bias)")
+    print("✓ Direction applied separately: UP (+) or DOWN (-)")
+    print("✓ Predictions scaled by confidence: Low confidence → smaller moves")
+    print("✓ Final prediction = |magnitude| × direction × confidence_scaling")
     print("="*100)
 
 
