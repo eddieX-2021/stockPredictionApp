@@ -11,7 +11,7 @@ To make predictions on new data:
     result = train_stock_models(ticker, start_date, end_date)
     
     # Make prediction
-    prediction = make_prediction(result, X_new)
+    prediction = result["predict"](X_new)
     
     # Display results
     print(f"Direction: {prediction['direction']}")
@@ -53,93 +53,7 @@ Overall System Confidence:
 from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
-from app.mlm_predict.train_model import (train_stock_models, 
-                                          predict_ensemble_direction, 
-                                          predict_ensemble_magnitude)
-
-
-def make_prediction(result, X_new):
-    """
-    Make a complete prediction using both direction and magnitude models.
-    Combines them intelligently:
-    1. Get direction (UP/DOWN) with confidence
-    2. Get magnitude (absolute % change)
-    3. Apply direction sign to magnitude
-    4. Scale by confidence (lower confidence = smaller predicted move)
-    
-    Args:
-        result: Output from train_stock_models
-        X_new: Feature array for prediction (single row or multiple rows)
-    
-    Returns:
-        Dictionary with predictions and confidence
-    """
-    dir_info = result["direction"]
-    mag_info = result["magnitude"]
-    
-    # Get direction prediction and confidence
-    if dir_info["ensemble"]:
-        direction_pred, direction_prob = predict_ensemble_direction(X_new, dir_info["ensemble"])
-    else:
-        X_proc = dir_info["scaler"].transform(X_new) if dir_info["scaler"] else X_new
-        direction_pred = dir_info["best_model"].predict(X_proc)
-        if hasattr(dir_info["best_model"], "predict_proba"):
-            direction_prob = dir_info["best_model"].predict_proba(X_proc)[:, 1]
-        else:
-            direction_prob = direction_pred
-    
-    # Get magnitude prediction (absolute value)
-    if mag_info["ensemble"]:
-        magnitude_pred = predict_ensemble_magnitude(X_new, mag_info["ensemble"])
-    else:
-        X_proc = mag_info["scaler"].transform(X_new) if mag_info["scaler"] else X_new
-        magnitude_pred = mag_info["best_model"].predict(X_proc)
-    
-    # Ensure magnitude is positive (model should already output positive, but safety check)
-    magnitude_pred = np.abs(magnitude_pred)
-    
-    # Apply direction to magnitude
-    # direction_pred: 1 = UP, 0 = DOWN
-    # Convert to: 1 = UP (+), -1 = DOWN (-)
-    direction_sign = np.where(direction_pred == 1, 1, -1)
-    signed_magnitude = magnitude_pred * direction_sign
-    
-    # Scale magnitude by confidence
-    # direction_prob is probability of UP (0 to 1)
-    # Convert to confidence: how far from 0.5 (random guess)
-    # confidence = 0.5 → multiply by 0 (no confidence, predict 0% change)
-    # confidence = 1.0 → multiply by 1 (full confidence, use full magnitude)
-    confidence_score = np.abs(direction_prob - 0.5) * 2  # Scale to 0-1
-    scaled_magnitude = signed_magnitude * confidence_score
-    
-    # Handle single vs multiple predictions
-    if len(direction_pred) == 1:
-        return {
-            "direction": "UP" if direction_pred[0] == 1 else "DOWN",
-            "direction_confidence": float(direction_prob[0]),
-            "raw_magnitude_pct": float(magnitude_pred[0]),  # Absolute value
-            "signed_magnitude_pct": float(signed_magnitude[0]),  # With direction applied
-            "final_prediction_pct": float(scaled_magnitude[0]),  # Confidence-scaled
-            "confidence_score": float(confidence_score[0]),
-            "using_ensemble": {
-                "direction": dir_info["ensemble"] is not None,
-                "magnitude": mag_info["ensemble"] is not None
-            }
-        }
-    else:
-        return {
-            "direction": ["UP" if d == 1 else "DOWN" for d in direction_pred],
-            "direction_confidence": direction_prob.tolist(),
-            "raw_magnitude_pct": magnitude_pred.tolist(),
-            "signed_magnitude_pct": signed_magnitude.tolist(),
-            "final_prediction_pct": scaled_magnitude.tolist(),
-            "confidence_score": confidence_score.tolist(),
-            "using_ensemble": {
-                "direction": dir_info["ensemble"] is not None,
-                "magnitude": mag_info["ensemble"] is not None
-            }
-        }
-
+from app.mlm_predict.train_model import train_stock_models
 
 
 def test_single_ticker(ticker, start_date, end_date):

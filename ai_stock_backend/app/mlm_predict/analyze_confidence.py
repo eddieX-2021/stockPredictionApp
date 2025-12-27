@@ -7,41 +7,36 @@ from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 from app.mlm_predict.train_model import train_stock_models
-from app.mlm_predict.test_train import make_prediction
-from app.services.fetch_data import fetch_raw_stock_data, generate_features
 
 
 def analyze_confidence_distribution(ticker, start_date, end_date):
     """
     Analyze confidence distribution and accuracy for a single ticker.
-    Now includes actual vs predicted direction comparison and bias detection.
+    Includes actual vs predicted direction comparison and bias detection.
     """
     print(f"\n{'='*70}")
     print(f"Analyzing Confidence Distribution: {ticker}")
     print(f"{'='*70}")
     
-    # Train models
-    result = train_stock_models(ticker, start_date, end_date)
+    # Train models with test data returned
+    result = train_stock_models(ticker, start_date, end_date, return_data=True)
     
     if not result:
         print(f"Failed to train models for {ticker}")
         return None
     
-    # ============================================================
-    # ADD FEATURE IMPORTANCE ANALYSIS HERE (RIGHT AFTER TRAINING)
-    # ============================================================
+    # Get test data
+    test_data = result["test_data"]
+    X_test = test_data["X_test"]
+    y_actual = test_data["y_direction_test"]
     
+    # Feature importance analysis
     print(f"\n{'='*70}")
     print("FEATURE IMPORTANCE ANALYSIS")
     print(f"{'='*70}")
     
     dir_model = result['direction']['best_model']
-    
-    # Get feature names from the test data (we'll fetch it again)
-    stock_data = fetch_raw_stock_data(ticker, start_date, end_date)
-    X, y_price, stock_data = generate_features(stock_data)
-    X = X.iloc[:-1]
-    feature_names = X.columns
+    feature_names = X_test.columns
     
     if hasattr(dir_model, 'feature_importances_'):
         importances = dir_model.feature_importances_
@@ -65,29 +60,11 @@ def analyze_confidence_distribution(ticker, start_date, end_date):
     else:
         print(f"\n{result['direction']['best_model_name']} does not support feature importance.")
     
-    # Get test data
-    stock_data = fetch_raw_stock_data(ticker, start_date, end_date)
-    X, y_price, stock_data = generate_features(stock_data)
-    
-    # Align data (same logic as in train_model)
-    X = X.iloc[:-1]
-    y_price = y_price.iloc[:-1]
-    current_prices = stock_data['Close'].iloc[:-1].values
-    
-    # Create actual direction labels
-    y_direction_actual = (y_price.values > current_prices).astype(int)
-    
-    # Use test set (last 20%)
-    n = len(X)
-    test_start = int(n * 0.8)
-    X_test = X.iloc[test_start:]
-    y_actual = y_direction_actual[test_start:]
-    
     # Make predictions for all test samples
     predictions = []
     for i in range(len(X_test)):
         X_sample = X_test.iloc[i:i+1]
-        pred = make_prediction(result, X_sample)
+        pred = result["predict"](X_sample)
         predictions.append(pred)
     
     # Extract data
@@ -99,15 +76,16 @@ def analyze_confidence_distribution(ticker, start_date, end_date):
     correct = (pred_directions == y_actual).astype(int)
     overall_accuracy = correct.mean()
     
+    # Define confidence thresholds (symmetric)
     HIGH_UP_THRESHOLD = 0.70
     HIGH_DOWN_THRESHOLD = 0.30
     MEDIUM_UP_THRESHOLD = 0.60
     MEDIUM_DOWN_THRESHOLD = 0.40
 
-    # Categorize with SYMMETRIC thresholds
+    # Categorize predictions
     high_conf_mask = (dir_confidences >= HIGH_UP_THRESHOLD) | (dir_confidences <= HIGH_DOWN_THRESHOLD)
     medium_conf_mask = ((dir_confidences >= MEDIUM_UP_THRESHOLD) & (dir_confidences < HIGH_UP_THRESHOLD)) | \
-                    ((dir_confidences > HIGH_DOWN_THRESHOLD) & (dir_confidences <= MEDIUM_DOWN_THRESHOLD))
+                       ((dir_confidences > HIGH_DOWN_THRESHOLD) & (dir_confidences <= MEDIUM_DOWN_THRESHOLD))
     low_conf_mask = (dir_confidences > MEDIUM_DOWN_THRESHOLD) & (dir_confidences < MEDIUM_UP_THRESHOLD)
 
     # Separate UP and DOWN high confidence
@@ -133,8 +111,8 @@ def analyze_confidence_distribution(ticker, start_date, end_date):
     total_down = (pred_directions == 0).sum()
     
     # High confidence breakdown
-    high_conf_up = ((pred_directions == 1) & high_conf_mask).sum()
-    high_conf_down = ((pred_directions == 0) & high_conf_mask).sum()
+    high_conf_up_count = ((pred_directions == 1) & high_conf_mask).sum()
+    high_conf_down_count = ((pred_directions == 0) & high_conf_mask).sum()
     
     # Actual market direction distribution (for comparison)
     actual_up = (y_actual == 1).sum()
@@ -167,8 +145,8 @@ def analyze_confidence_distribution(ticker, start_date, end_date):
         # Confidence levels
         'high_conf_count': int(high_conf_total),
         'high_conf_pct': float(high_conf_total / total * 100),
-        'high_conf_up': int(high_conf_up),
-        'high_conf_down': int(high_conf_down),
+        'high_conf_up': int(high_conf_up_count),
+        'high_conf_down': int(high_conf_down_count),
         'high_conf_accuracy': float(high_conf_accuracy),
         'high_conf_correct': int(high_conf_correct),
         
@@ -213,14 +191,14 @@ def analyze_confidence_distribution(ticker, start_date, end_date):
     print(f"\n{'='*70}")
     print("ACCURACY BY CONFIDENCE LEVEL")
     print(f"{'='*70}")
-    print(f"High (≥65%):     {stats['high_conf_count']:3d} predictions ({stats['high_conf_pct']:.1f}%)")
+    print(f"High (≥70% or ≤30%): {stats['high_conf_count']:3d} predictions ({stats['high_conf_pct']:.1f}%)")
     print(f"  ↳ Accuracy: {stats['high_conf_accuracy']:.2%} ({stats['high_conf_correct']}/{stats['high_conf_count']} correct)")
     print(f"  ↳ UP: {stats['high_conf_up']}, DOWN: {stats['high_conf_down']}")
     
-    print(f"\nMedium (55-65%): {stats['medium_conf_count']:3d} predictions ({stats['medium_conf_pct']:.1f}%)")
+    print(f"\nMedium (60-70% or 30-40%): {stats['medium_conf_count']:3d} predictions ({stats['medium_conf_pct']:.1f}%)")
     print(f"  ↳ Accuracy: {stats['medium_conf_accuracy']:.2%} ({stats['medium_conf_correct']}/{stats['medium_conf_count']} correct)")
     
-    print(f"\nLow (<55%):      {stats['low_conf_count']:3d} predictions ({stats['low_conf_pct']:.1f}%)")
+    print(f"\nLow (40-60%):    {stats['low_conf_count']:3d} predictions ({stats['low_conf_pct']:.1f}%)")
     print(f"  ↳ Accuracy: {stats['low_conf_accuracy']:.2%} ({stats['low_conf_correct']}/{stats['low_conf_count']} correct)")
     
     print(f"\n{'='*70}")
@@ -329,14 +307,14 @@ def analyze_all_tickers(tickers):
             print("  2. Features favor UP predictions")
             print("  3. Class imbalance in training data")
             print("\nSuggestions:")
-            print("  - Remove 'Close' from features (price-dependent)")
-            print("  - Add class weights to balance UP/DOWN")
+            print("  - Add class weights to balance UP/DOWN (already implemented)")
             print("  - Train on longer period including bear markets")
             print("  - Check if SPY_Return or market features are biased")
+            print("  - Consider removing time-dependent features")
         elif avg_bias > 5:
             print("\n⚠️  Moderate UP bias present")
-            print("  - Consider removing 'Close' from features")
             print("  - Monitor feature importance for bias sources")
+            print("  - Consider additional class balancing techniques")
         else:
             print("\n✓ Bias is within acceptable range")
         

@@ -17,13 +17,12 @@ from joblib import Parallel, delayed
 import os
 from app.services.fetch_data import fetch_raw_stock_data, generate_features
 
-# Optional: LightGBM (install with: pip install lightgbm)
+# Optional: LightGBM
 try:
     from lightgbm import LGBMClassifier, LGBMRegressor
     LIGHTGBM_AVAILABLE = True
 except ImportError:
     LIGHTGBM_AVAILABLE = False
-    print("Note: LightGBM not available. Install with: pip install lightgbm")
 
 # Models that benefit from scaling
 MODELS_NEEDING_SCALING = {"Logistic Regression", "Ridge", "MLP"}
@@ -39,13 +38,11 @@ def predict_ensemble_direction(X, ensemble_info):
     scalers = ensemble_info["scalers"]
     model_names = ensemble_info["model_names"]
     
-    # Collect weighted probability predictions
     weighted_probs = np.zeros(len(X))
     
     for i, (model, scaler, name) in enumerate(zip(models, scalers, model_names)):
         X_proc = scaler.transform(X) if scaler is not None else X
         
-        # Get probability of upward movement (class 1)
         if hasattr(model, "predict_proba"):
             prob = model.predict_proba(X_proc)[:, 1]
         else:
@@ -53,7 +50,6 @@ def predict_ensemble_direction(X, ensemble_info):
         
         weighted_probs += prob * weights[i]
     
-    # Convert to binary predictions
     predictions = (weighted_probs >= 0.5).astype(int)
     return predictions, weighted_probs
 
@@ -78,10 +74,91 @@ def predict_ensemble_magnitude(X, ensemble_info):
     return sum(predictions)
 
 
+def make_prediction(result, X_new):
+    """
+    Make a complete prediction using both direction and magnitude models.
+    
+    Combines direction and magnitude intelligently:
+    1. Get direction (UP/DOWN) with confidence
+    2. Get magnitude (absolute % change)
+    3. Apply direction sign to magnitude
+    4. Scale by confidence (lower confidence = smaller predicted move)
+    
+    Args:
+        result: Output from train_stock_models
+        X_new: Feature array for prediction (single row or multiple rows)
+    
+    Returns:
+        Dictionary with predictions and confidence metrics
+    """
+    dir_info = result["direction"]
+    mag_info = result["magnitude"]
+    
+    # Get direction prediction and confidence
+    if dir_info["ensemble"]:
+        direction_pred, direction_prob = predict_ensemble_direction(X_new, dir_info["ensemble"])
+    else:
+        X_proc = dir_info["scaler"].transform(X_new) if dir_info["scaler"] else X_new
+        direction_pred = dir_info["best_model"].predict(X_proc)
+        if hasattr(dir_info["best_model"], "predict_proba"):
+            direction_prob = dir_info["best_model"].predict_proba(X_proc)[:, 1]
+        else:
+            direction_prob = direction_pred
+    
+    # Get magnitude prediction (absolute value)
+    if mag_info["ensemble"]:
+        magnitude_pred = predict_ensemble_magnitude(X_new, mag_info["ensemble"])
+    else:
+        X_proc = mag_info["scaler"].transform(X_new) if mag_info["scaler"] else X_new
+        magnitude_pred = mag_info["best_model"].predict(X_proc)
+    
+    # Ensure magnitude is positive
+    magnitude_pred = np.abs(magnitude_pred)
+    
+    # Apply direction to magnitude
+    # direction_pred: 1 = UP, 0 = DOWN
+    # Convert to: 1 = UP (+), -1 = DOWN (-)
+    direction_sign = np.where(direction_pred == 1, 1, -1)
+    signed_magnitude = magnitude_pred * direction_sign
+    
+    # Scale magnitude by confidence
+    # direction_prob is probability of UP (0 to 1)
+    # Convert to confidence: how far from 0.5 (random guess)
+    confidence_score = np.abs(direction_prob - 0.5) * 2  # Scale to 0-1
+    scaled_magnitude = signed_magnitude * confidence_score
+    
+    # Handle single vs multiple predictions
+    if len(direction_pred) == 1:
+        return {
+            "direction": "UP" if direction_pred[0] == 1 else "DOWN",
+            "direction_confidence": float(direction_prob[0]),
+            "raw_magnitude_pct": float(magnitude_pred[0]),
+            "signed_magnitude_pct": float(signed_magnitude[0]),
+            "final_prediction_pct": float(scaled_magnitude[0]),
+            "confidence_score": float(confidence_score[0]),
+            "using_ensemble": {
+                "direction": dir_info["ensemble"] is not None,
+                "magnitude": mag_info["ensemble"] is not None
+            }
+        }
+    else:
+        return {
+            "direction": ["UP" if d == 1 else "DOWN" for d in direction_pred],
+            "direction_confidence": direction_prob.tolist(),
+            "raw_magnitude_pct": magnitude_pred.tolist(),
+            "signed_magnitude_pct": signed_magnitude.tolist(),
+            "final_prediction_pct": scaled_magnitude.tolist(),
+            "confidence_score": confidence_score.tolist(),
+            "using_ensemble": {
+                "direction": dir_info["ensemble"] is not None,
+                "magnitude": mag_info["ensemble"] is not None
+            }
+        }
+
+
 def train_direction_model(name, model, X_train, y_train, X_val, y_val, X_test, y_test, scaler=None):
     """Train and evaluate a classification model for direction prediction."""
     try:
-        # Apply scaling if needed
         if name in MODELS_NEEDING_SCALING and scaler is not None:
             X_train_proc = scaler.fit_transform(X_train)
             X_val_proc = scaler.transform(X_val)
@@ -91,7 +168,6 @@ def train_direction_model(name, model, X_train, y_train, X_val, y_val, X_test, y
             X_val_proc = X_val
             X_test_proc = X_test
         
-        # Train model
         model.fit(X_train_proc, y_train)
         
         # Validation metrics
@@ -131,7 +207,6 @@ def train_direction_model(name, model, X_train, y_train, X_val, y_val, X_test, y
 def train_magnitude_model(name, model, X_train, y_train, X_val, y_val, X_test, y_test, scaler=None):
     """Train and evaluate a regression model for magnitude prediction."""
     try:
-        # Apply scaling if needed
         if name in MODELS_NEEDING_SCALING and scaler is not None:
             X_train_proc = scaler.fit_transform(X_train)
             X_val_proc = scaler.transform(X_val)
@@ -141,7 +216,6 @@ def train_magnitude_model(name, model, X_train, y_train, X_val, y_val, X_test, y
             X_val_proc = X_val
             X_test_proc = X_test
         
-        # Train model
         model.fit(X_train_proc, y_train)
         
         # Validation metrics
@@ -174,14 +248,31 @@ def train_magnitude_model(name, model, X_train, y_train, X_val, y_val, X_test, y
         return name, None, None, None
 
 
-def train_stock_models(ticker, start_date, end_date):
+def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=False):
     """
     Train dual prediction system: direction (up/down) and magnitude (% change).
-    Returns comprehensive results for both models.
+    Returns comprehensive results for both models plus prediction function.
+    
+    Args:
+        ticker: Stock ticker symbol
+        start_date: Start date for training data (YYYY-MM-DD)
+        end_date: End date for training data (YYYY-MM-DD)
+        verbose: Whether to print detailed training logs
+        return_data: If True, return X, y_direction for testing purposes
+    
+    Returns:
+        Dictionary containing:
+        - direction: Direction model info and metrics
+        - magnitude: Magnitude model info and metrics
+        - confidence: Overall system confidence (high/medium/low)
+        - ticker: Stock ticker
+        - predict: Function to make predictions on new data
+        - test_data: (optional) Test set data for evaluation
     """
     stock_data = fetch_raw_stock_data(ticker, start_date, end_date)
     if stock_data is None:
-        print("Failed to fetch data.")
+        if verbose:
+            print("Failed to fetch data.")
         return None
 
     # Extended training window
@@ -189,20 +280,19 @@ def train_stock_models(ticker, start_date, end_date):
 
     X, y_price, stock_data = generate_features(stock_data)
     if X is None or y_price is None:
-        print("Failed to generate features.")
+        if verbose:
+            print("Failed to generate features.")
         return None
 
-    # Align the data - remove last row from X and current prices since target is shifted
-    X = X.iloc[:-1]  # Remove last row since we don't have a target for it
-    y_price = y_price.iloc[:-1]  # This is actually next day's price
+    # Align the data
+    X = X.iloc[:-1]
+    y_price = y_price.iloc[:-1]
     current_prices = stock_data['Close'].iloc[:-1].values
     
     # Create direction target (1 = up, 0 = down)
-    # y_price already contains next day's prices due to shift(-1) in generate_features
     y_direction = (y_price.values > current_prices).astype(int)
     
     # Create magnitude target (ABSOLUTE percentage change)
-    # This lets magnitude focus purely on move SIZE, not direction
     pct_change = ((y_price.values - current_prices) / current_prices) * 100
     y_magnitude = np.abs(pct_change)
 
@@ -223,30 +313,28 @@ def train_stock_models(ticker, start_date, end_date):
     y_mag_val = y_magnitude[train_end:val_end]
     y_mag_test = y_magnitude[val_end:]
 
-    print(f"Training set: {len(X_train)} samples")
-    print(f"Validation set: {len(X_val)} samples")
-    print(f"Test set: {len(X_test)} samples")
-    print(f"Direction class balance (training): Up={sum(y_dir_train)}/{len(y_dir_train)} ({sum(y_dir_train)/len(y_dir_train)*100:.1f}%)\n")
+    if verbose:
+        print(f"Training set: {len(X_train)} samples")
+        print(f"Validation set: {len(X_val)} samples")
+        print(f"Test set: {len(X_test)} samples")
+        print(f"Direction class balance (training): Up={sum(y_dir_train)}/{len(y_dir_train)} ({sum(y_dir_train)/len(y_dir_train)*100:.1f}%)\n")
 
     # Calculate class weights for balancing
     class_weights_array = compute_class_weight('balanced', classes=np.unique(y_dir_train), y=y_dir_train)
     class_weight_dict = {0: class_weights_array[0], 1: class_weights_array[1]}
     
-    print(f"Class weights: DOWN={class_weight_dict[0]:.3f}, UP={class_weight_dict[1]:.3f}")
-    print("(Higher weight = model will focus more on that class)\n")
+    if verbose:
+        print(f"Class weights: DOWN={class_weight_dict[0]:.3f}, UP={class_weight_dict[1]:.3f}\n")
 
-    # ==========================================
-    # DIRECTION MODELS (Classification) - WITH CLASS BALANCING
-    # ==========================================
-    
+    # Direction models with class balancing
     direction_models = {
         "Logistic Regression": LogisticRegression(
-            class_weight='balanced',  # ADDED: Automatic balancing
+            class_weight='balanced',
             max_iter=1000, 
             random_state=42
         ),
         "Random Forest": RandomForestClassifier(
-            class_weight='balanced',  # ADDED: Automatic balancing
+            class_weight='balanced',
             n_estimators=200, 
             max_depth=10, 
             min_samples_split=5, 
@@ -257,20 +345,18 @@ def train_stock_models(ticker, start_date, end_date):
             learning_rate=0.05, 
             max_depth=5, 
             random_state=42
-            # Note: GradientBoosting doesn't have class_weight, but we can use sample_weight in fit
         ),
         "HistGradient Boosting": HistGradientBoostingClassifier(
             max_iter=150, 
             learning_rate=0.05, 
             max_depth=10, 
             random_state=42
-            # Note: HistGradient doesn't have class_weight parameter
         ),
         "XGBoost": XGBClassifier(
             n_estimators=150, 
             learning_rate=0.05, 
             max_depth=6,
-            scale_pos_weight=class_weight_dict[1]/class_weight_dict[0],  # ADDED: XGBoost balancing
+            scale_pos_weight=class_weight_dict[1]/class_weight_dict[0],
             random_state=42, 
             eval_metric='logloss'
         ),
@@ -278,7 +364,7 @@ def train_stock_models(ticker, start_date, end_date):
             iterations=150, 
             depth=8, 
             learning_rate=0.05,
-            class_weights=class_weight_dict,  # ADDED: CatBoost balancing
+            class_weights=class_weight_dict,
             verbose=False, 
             random_state=42
         ),
@@ -286,25 +372,20 @@ def train_stock_models(ticker, start_date, end_date):
             hidden_layer_sizes=(100, 50), 
             max_iter=500, 
             random_state=42
-            # Note: MLP doesn't have class_weight, will use default
         )
     }
     
-    # Add LightGBM if available
     if LIGHTGBM_AVAILABLE:
         direction_models["LightGBM"] = LGBMClassifier(
             n_estimators=150, 
             learning_rate=0.05, 
             max_depth=8,
-            class_weight='balanced',  # ADDED: LightGBM balancing
+            class_weight='balanced',
             random_state=42, 
             verbose=-1
         )
 
-    # ==========================================
-    # MAGNITUDE MODELS (Regression)
-    # ==========================================
-    
+    # Magnitude models
     magnitude_models = {
         "Ridge": Ridge(alpha=1.0, random_state=42),
         "Random Forest": RandomForestRegressor(
@@ -329,7 +410,6 @@ def train_stock_models(ticker, start_date, end_date):
         )
     }
     
-    # Add LightGBM if available
     if LIGHTGBM_AVAILABLE:
         magnitude_models["LightGBM"] = LGBMRegressor(
             n_estimators=150, learning_rate=0.05, max_depth=8,
@@ -337,9 +417,10 @@ def train_stock_models(ticker, start_date, end_date):
         )
 
     # Train direction models
-    print("="*60)
-    print("TRAINING DIRECTION MODELS (Up/Down) - WITH CLASS BALANCING")
-    print("="*60)
+    if verbose:
+        print("="*60)
+        print("TRAINING DIRECTION MODELS (Up/Down)")
+        print("="*60)
     
     n_jobs = min(len(direction_models), os.cpu_count() or 1)
     
@@ -364,16 +445,18 @@ def train_stock_models(ticker, start_date, end_date):
         if scaler is not None:
             dir_scalers[name] = scaler
         
-        print(
-            f"{name:25} | "
-            f"Val Acc: {metrics['validation']['Accuracy']:.4f}, F1: {metrics['validation']['F1']:.4f} | "
-            f"Test Acc: {metrics['test']['Accuracy']:.4f}, F1: {metrics['test']['F1']:.4f}"
-        )
+        if verbose:
+            print(
+                f"{name:25} | "
+                f"Val Acc: {metrics['validation']['Accuracy']:.4f}, F1: {metrics['validation']['F1']:.4f} | "
+                f"Test Acc: {metrics['test']['Accuracy']:.4f}, F1: {metrics['test']['F1']:.4f}"
+            )
 
     # Train magnitude models
-    print(f"\n{'='*60}")
-    print("TRAINING MAGNITUDE MODELS (% Change)")
-    print("="*60)
+    if verbose:
+        print(f"\n{'='*60}")
+        print("TRAINING MAGNITUDE MODELS (% Change)")
+        print("="*60)
     
     mag_results = Parallel(n_jobs=n_jobs, backend='threading', verbose=0)(
         delayed(train_magnitude_model)(
@@ -396,11 +479,12 @@ def train_stock_models(ticker, start_date, end_date):
         if scaler is not None:
             mag_scalers[name] = scaler
         
-        print(
-            f"{name:25} | "
-            f"Val R²: {metrics['validation']['R²']:.4f}, MAE: {metrics['validation']['MAE']:.3f}% | "
-            f"Test R²: {metrics['test']['R²']:.4f}, MAE: {metrics['test']['MAE']:.3f}%"
-        )
+        if verbose:
+            print(
+                f"{name:25} | "
+                f"Val R²: {metrics['validation']['R²']:.4f}, MAE: {metrics['validation']['MAE']:.3f}% | "
+                f"Test R²: {metrics['test']['R²']:.4f}, MAE: {metrics['test']['MAE']:.3f}%"
+            )
 
     # Select best models
     best_dir_name = max(dir_report, key=lambda x: dir_report[x]["validation"]["F1"])
@@ -456,22 +540,22 @@ def train_stock_models(ticker, start_date, end_date):
     else:
         confidence = "low"
 
-    print(f"\n{'='*60}")
-    print("BEST MODELS SUMMARY")
-    print("="*60)
-    print(f"\nDirection Model: {best_dir_name}")
-    print(f"  Val - Accuracy: {dir_report[best_dir_name]['validation']['Accuracy']:.4f}, F1: {dir_report[best_dir_name]['validation']['F1']:.4f}")
-    print(f"  Test - Accuracy: {dir_report[best_dir_name]['test']['Accuracy']:.4f}, F1: {dir_report[best_dir_name]['test']['F1']:.4f}")
-    
-    print(f"\nMagnitude Model: {best_mag_name}")
-    print(f"  Val - R²: {mag_report[best_mag_name]['validation']['R²']:.4f}, MAE: {mag_report[best_mag_name]['validation']['MAE']:.3f}%")
-    print(f"  Test - R²: {mag_report[best_mag_name]['test']['R²']:.4f}, MAE: {mag_report[best_mag_name]['test']['MAE']:.3f}%")
-    print(f"  Note: Predicting absolute % change (direction applied separately)")
-    
-    print(f"\nOverall Confidence: {confidence.upper()}")
-    print("="*60)
+    if verbose:
+        print(f"\n{'='*60}")
+        print("BEST MODELS SUMMARY")
+        print("="*60)
+        print(f"\nDirection Model: {best_dir_name}")
+        print(f"  Val - Accuracy: {dir_report[best_dir_name]['validation']['Accuracy']:.4f}, F1: {dir_report[best_dir_name]['validation']['F1']:.4f}")
+        print(f"  Test - Accuracy: {dir_report[best_dir_name]['test']['Accuracy']:.4f}, F1: {dir_report[best_dir_name]['test']['F1']:.4f}")
+        
+        print(f"\nMagnitude Model: {best_mag_name}")
+        print(f"  Val - R²: {mag_report[best_mag_name]['validation']['R²']:.4f}, MAE: {mag_report[best_mag_name]['validation']['MAE']:.3f}%")
+        print(f"  Test - R²: {mag_report[best_mag_name]['test']['R²']:.4f}, MAE: {mag_report[best_mag_name]['test']['MAE']:.3f}%")
+        
+        print(f"\nOverall Confidence: {confidence.upper()}")
+        print("="*60)
 
-    return {
+    result = {
         "direction": {
             "best_model": best_dir_model,
             "best_model_name": best_dir_name,
@@ -491,3 +575,21 @@ def train_stock_models(ticker, start_date, end_date):
         "confidence": confidence,
         "ticker": ticker
     }
+    
+    # Add prediction function as a method
+    def predict(X_new):
+        """Make predictions on new data using trained models."""
+        return make_prediction(result, X_new)
+    
+    result["predict"] = predict
+    
+    # Optionally return test data for analysis
+    if return_data:
+        result["test_data"] = {
+            "X_test": X_test,
+            "y_direction_test": y_dir_test,
+            "full_X": X,
+            "full_y_direction": y_direction
+        }
+    
+    return result
