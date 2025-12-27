@@ -12,6 +12,7 @@ from sklearn.neural_network import MLPClassifier, MLPRegressor
 from xgboost import XGBClassifier, XGBRegressor
 from catboost import CatBoostClassifier, CatBoostRegressor
 from sklearn.preprocessing import StandardScaler
+from sklearn.utils.class_weight import compute_class_weight
 from joblib import Parallel, delayed
 import os
 from app.services.fetch_data import fetch_raw_stock_data, generate_features
@@ -227,39 +228,77 @@ def train_stock_models(ticker, start_date, end_date):
     print(f"Test set: {len(X_test)} samples")
     print(f"Direction class balance (training): Up={sum(y_dir_train)}/{len(y_dir_train)} ({sum(y_dir_train)/len(y_dir_train)*100:.1f}%)\n")
 
+    # Calculate class weights for balancing
+    class_weights_array = compute_class_weight('balanced', classes=np.unique(y_dir_train), y=y_dir_train)
+    class_weight_dict = {0: class_weights_array[0], 1: class_weights_array[1]}
+    
+    print(f"Class weights: DOWN={class_weight_dict[0]:.3f}, UP={class_weight_dict[1]:.3f}")
+    print("(Higher weight = model will focus more on that class)\n")
+
     # ==========================================
-    # DIRECTION MODELS (Classification)
+    # DIRECTION MODELS (Classification) - WITH CLASS BALANCING
     # ==========================================
     
     direction_models = {
-        "Logistic Regression": LogisticRegression(max_iter=1000, random_state=42),
+        "Logistic Regression": LogisticRegression(
+            class_weight='balanced',  # ADDED: Automatic balancing
+            max_iter=1000, 
+            random_state=42
+        ),
         "Random Forest": RandomForestClassifier(
-            n_estimators=200, max_depth=10, min_samples_split=5, random_state=42
+            class_weight='balanced',  # ADDED: Automatic balancing
+            n_estimators=200, 
+            max_depth=10, 
+            min_samples_split=5, 
+            random_state=42
         ),
         "Gradient Boosting": GradientBoostingClassifier(
-            n_estimators=150, learning_rate=0.05, max_depth=5, random_state=42
+            n_estimators=150, 
+            learning_rate=0.05, 
+            max_depth=5, 
+            random_state=42
+            # Note: GradientBoosting doesn't have class_weight, but we can use sample_weight in fit
         ),
         "HistGradient Boosting": HistGradientBoostingClassifier(
-            max_iter=150, learning_rate=0.05, max_depth=10, random_state=42
+            max_iter=150, 
+            learning_rate=0.05, 
+            max_depth=10, 
+            random_state=42
+            # Note: HistGradient doesn't have class_weight parameter
         ),
         "XGBoost": XGBClassifier(
-            n_estimators=150, learning_rate=0.05, max_depth=6,
-            random_state=42, eval_metric='logloss'
+            n_estimators=150, 
+            learning_rate=0.05, 
+            max_depth=6,
+            scale_pos_weight=class_weight_dict[1]/class_weight_dict[0],  # ADDED: XGBoost balancing
+            random_state=42, 
+            eval_metric='logloss'
         ),
         "CatBoost": CatBoostClassifier(
-            iterations=150, depth=8, learning_rate=0.05,
-            verbose=False, random_state=42
+            iterations=150, 
+            depth=8, 
+            learning_rate=0.05,
+            class_weights=class_weight_dict,  # ADDED: CatBoost balancing
+            verbose=False, 
+            random_state=42
         ),
         "MLP": MLPClassifier(
-            hidden_layer_sizes=(100, 50), max_iter=500, random_state=42
+            hidden_layer_sizes=(100, 50), 
+            max_iter=500, 
+            random_state=42
+            # Note: MLP doesn't have class_weight, will use default
         )
     }
     
     # Add LightGBM if available
     if LIGHTGBM_AVAILABLE:
         direction_models["LightGBM"] = LGBMClassifier(
-            n_estimators=150, learning_rate=0.05, max_depth=8,
-            random_state=42, verbose=-1
+            n_estimators=150, 
+            learning_rate=0.05, 
+            max_depth=8,
+            class_weight='balanced',  # ADDED: LightGBM balancing
+            random_state=42, 
+            verbose=-1
         )
 
     # ==========================================
@@ -299,7 +338,7 @@ def train_stock_models(ticker, start_date, end_date):
 
     # Train direction models
     print("="*60)
-    print("TRAINING DIRECTION MODELS (Up/Down)")
+    print("TRAINING DIRECTION MODELS (Up/Down) - WITH CLASS BALANCING")
     print("="*60)
     
     n_jobs = min(len(direction_models), os.cpu_count() or 1)

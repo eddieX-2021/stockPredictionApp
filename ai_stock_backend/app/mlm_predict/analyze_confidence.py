@@ -1,6 +1,6 @@
 """
-Analyze confidence distribution from trained models.
-Shows how many predictions fall into high/medium/low confidence buckets.
+Enhanced confidence analyzer with accuracy tracking and bias detection.
+Shows prediction distribution, accuracy by confidence level, and directional bias.
 """
 
 from datetime import datetime, timedelta
@@ -13,8 +13,8 @@ from app.services.fetch_data import fetch_raw_stock_data, generate_features
 
 def analyze_confidence_distribution(ticker, start_date, end_date):
     """
-    Analyze the confidence distribution for a single ticker.
-    Returns detailed statistics on prediction confidence levels.
+    Analyze confidence distribution and accuracy for a single ticker.
+    Now includes actual vs predicted direction comparison and bias detection.
     """
     print(f"\n{'='*70}")
     print(f"Analyzing Confidence Distribution: {ticker}")
@@ -27,14 +27,61 @@ def analyze_confidence_distribution(ticker, start_date, end_date):
         print(f"Failed to train models for {ticker}")
         return None
     
+    # ============================================================
+    # ADD FEATURE IMPORTANCE ANALYSIS HERE (RIGHT AFTER TRAINING)
+    # ============================================================
+    
+    print(f"\n{'='*70}")
+    print("FEATURE IMPORTANCE ANALYSIS")
+    print(f"{'='*70}")
+    
+    dir_model = result['direction']['best_model']
+    
+    # Get feature names from the test data (we'll fetch it again)
+    stock_data = fetch_raw_stock_data(ticker, start_date, end_date)
+    X, y_price, stock_data = generate_features(stock_data)
+    X = X.iloc[:-1]
+    feature_names = X.columns
+    
+    if hasattr(dir_model, 'feature_importances_'):
+        importances = dir_model.feature_importances_
+        
+        # Sort by importance
+        indices = np.argsort(importances)[::-1][:15]  # Top 15 features
+        
+        print(f"\nTop 15 Most Important Features for {result['direction']['best_model_name']}:")
+        print("-"*70)
+        for i, idx in enumerate(indices, 1):
+            print(f"{i:2d}. {feature_names[idx]:30s} {importances[idx]:.4f}")
+    elif hasattr(dir_model, 'coef_'):
+        # For linear models like Logistic Regression
+        coefs = np.abs(dir_model.coef_[0])
+        indices = np.argsort(coefs)[::-1][:15]
+        
+        print(f"\nTop 15 Most Important Features for {result['direction']['best_model_name']}:")
+        print("-"*70)
+        for i, idx in enumerate(indices, 1):
+            print(f"{i:2d}. {feature_names[idx]:30s} {coefs[idx]:.4f}")
+    else:
+        print(f"\n{result['direction']['best_model_name']} does not support feature importance.")
+    
     # Get test data
     stock_data = fetch_raw_stock_data(ticker, start_date, end_date)
-    X, y, stock_data = generate_features(stock_data)
+    X, y_price, stock_data = generate_features(stock_data)
+    
+    # Align data (same logic as in train_model)
+    X = X.iloc[:-1]
+    y_price = y_price.iloc[:-1]
+    current_prices = stock_data['Close'].iloc[:-1].values
+    
+    # Create actual direction labels
+    y_direction_actual = (y_price.values > current_prices).astype(int)
     
     # Use test set (last 20%)
     n = len(X)
     test_start = int(n * 0.8)
     X_test = X.iloc[test_start:]
+    y_actual = y_direction_actual[test_start:]
     
     # Make predictions for all test samples
     predictions = []
@@ -43,79 +90,148 @@ def analyze_confidence_distribution(ticker, start_date, end_date):
         pred = make_prediction(result, X_sample)
         predictions.append(pred)
     
-    # Extract confidence scores
+    # Extract data
     dir_confidences = np.array([p['direction_confidence'] for p in predictions])
     conf_scores = np.array([p['confidence_score'] for p in predictions])
-    directions = [p['direction'] for p in predictions]
+    pred_directions = np.array([1 if p['direction'] == 'UP' else 0 for p in predictions])
     
-    # Categorize by direction confidence
-    high_conf_mask = dir_confidences >= 0.65
-    medium_conf_mask = (dir_confidences >= 0.55) & (dir_confidences < 0.65)
-    low_conf_mask = dir_confidences < 0.55
+    # Calculate accuracy
+    correct = (pred_directions == y_actual).astype(int)
+    overall_accuracy = correct.mean()
     
-    # Categorize by confidence score (for magnitude scaling)
-    high_score_mask = conf_scores >= 0.60
-    medium_score_mask = (conf_scores >= 0.30) & (conf_scores < 0.60)
-    low_score_mask = conf_scores < 0.30
+    HIGH_UP_THRESHOLD = 0.70
+    HIGH_DOWN_THRESHOLD = 0.30
+    MEDIUM_UP_THRESHOLD = 0.60
+    MEDIUM_DOWN_THRESHOLD = 0.40
+
+    # Categorize with SYMMETRIC thresholds
+    high_conf_mask = (dir_confidences >= HIGH_UP_THRESHOLD) | (dir_confidences <= HIGH_DOWN_THRESHOLD)
+    medium_conf_mask = ((dir_confidences >= MEDIUM_UP_THRESHOLD) & (dir_confidences < HIGH_UP_THRESHOLD)) | \
+                    ((dir_confidences > HIGH_DOWN_THRESHOLD) & (dir_confidences <= MEDIUM_DOWN_THRESHOLD))
+    low_conf_mask = (dir_confidences > MEDIUM_DOWN_THRESHOLD) & (dir_confidences < MEDIUM_UP_THRESHOLD)
+
+    # Separate UP and DOWN high confidence
+    high_conf_up = ((pred_directions == 1) & (dir_confidences >= HIGH_UP_THRESHOLD)).sum()
+    high_conf_down = ((pred_directions == 0) & (dir_confidences <= HIGH_DOWN_THRESHOLD)).sum()
     
-    # Calculate statistics
+    # Calculate accuracy by confidence level
+    high_conf_correct = correct[high_conf_mask].sum() if high_conf_mask.sum() > 0 else 0
+    high_conf_total = high_conf_mask.sum()
+    high_conf_accuracy = high_conf_correct / high_conf_total if high_conf_total > 0 else 0
+    
+    medium_conf_correct = correct[medium_conf_mask].sum() if medium_conf_mask.sum() > 0 else 0
+    medium_conf_total = medium_conf_mask.sum()
+    medium_conf_accuracy = medium_conf_correct / medium_conf_total if medium_conf_total > 0 else 0
+    
+    low_conf_correct = correct[low_conf_mask].sum() if low_conf_mask.sum() > 0 else 0
+    low_conf_total = low_conf_mask.sum()
+    low_conf_accuracy = low_conf_correct / low_conf_total if low_conf_total > 0 else 0
+    
+    # Direction distribution analysis
     total = len(predictions)
+    total_up = (pred_directions == 1).sum()
+    total_down = (pred_directions == 0).sum()
+    
+    # High confidence breakdown
+    high_conf_up = ((pred_directions == 1) & high_conf_mask).sum()
+    high_conf_down = ((pred_directions == 0) & high_conf_mask).sum()
+    
+    # Actual market direction distribution (for comparison)
+    actual_up = (y_actual == 1).sum()
+    actual_down = (y_actual == 0).sum()
+    
+    # Bias detection: compare prediction distribution to actual distribution
+    pred_up_pct = total_up / total * 100
+    actual_up_pct = actual_up / total * 100
+    bias = pred_up_pct - actual_up_pct
     
     stats = {
         'ticker': ticker,
         'total_predictions': total,
         
-        # Direction confidence buckets
-        'high_dir_conf_count': int(high_conf_mask.sum()),
-        'high_dir_conf_pct': float(high_conf_mask.sum() / total * 100),
-        'medium_dir_conf_count': int(medium_conf_mask.sum()),
-        'medium_dir_conf_pct': float(medium_conf_mask.sum() / total * 100),
-        'low_dir_conf_count': int(low_conf_mask.sum()),
-        'low_dir_conf_pct': float(low_conf_mask.sum() / total * 100),
+        # Overall prediction distribution
+        'total_up_predictions': int(total_up),
+        'total_up_pct': float(pred_up_pct),
+        'total_down_predictions': int(total_down),
+        'total_down_pct': float(total_down / total * 100),
         
-        # Confidence score buckets (magnitude scaling)
-        'high_score_count': int(high_score_mask.sum()),
-        'high_score_pct': float(high_score_mask.sum() / total * 100),
-        'medium_score_count': int(medium_score_mask.sum()),
-        'medium_score_pct': float(medium_score_mask.sum() / total * 100),
-        'low_score_count': int(low_score_mask.sum()),
-        'low_score_pct': float(low_score_mask.sum() / total * 100),
+        # Actual market distribution
+        'actual_up': int(actual_up),
+        'actual_up_pct': float(actual_up_pct),
+        'actual_down': int(actual_down),
+        'actual_down_pct': float(actual_down / total * 100),
+        
+        # Bias metric
+        'up_bias': float(bias),
+        
+        # Confidence levels
+        'high_conf_count': int(high_conf_total),
+        'high_conf_pct': float(high_conf_total / total * 100),
+        'high_conf_up': int(high_conf_up),
+        'high_conf_down': int(high_conf_down),
+        'high_conf_accuracy': float(high_conf_accuracy),
+        'high_conf_correct': int(high_conf_correct),
+        
+        'medium_conf_count': int(medium_conf_total),
+        'medium_conf_pct': float(medium_conf_total / total * 100),
+        'medium_conf_accuracy': float(medium_conf_accuracy),
+        'medium_conf_correct': int(medium_conf_correct),
+        
+        'low_conf_count': int(low_conf_total),
+        'low_conf_pct': float(low_conf_total / total * 100),
+        'low_conf_accuracy': float(low_conf_accuracy),
+        'low_conf_correct': int(low_conf_correct),
+        
+        # Overall accuracy
+        'overall_accuracy': float(overall_accuracy),
+        'overall_correct': int(correct.sum()),
         
         # Averages
         'avg_dir_confidence': float(dir_confidences.mean()),
         'avg_conf_score': float(conf_scores.mean()),
-        'max_dir_confidence': float(dir_confidences.max()),
-        'min_dir_confidence': float(dir_confidences.min()),
-        
-        # Direction distribution in high confidence
-        'high_conf_up_count': int(sum(1 for i, d in enumerate(directions) if high_conf_mask[i] and d == 'UP')),
-        'high_conf_down_count': int(sum(1 for i, d in enumerate(directions) if high_conf_mask[i] and d == 'DOWN')),
     }
     
     # Print detailed breakdown
     print(f"\nTotal Test Predictions: {total}")
-    print(f"\n{'='*70}")
-    print("DIRECTION CONFIDENCE DISTRIBUTION")
-    print(f"{'='*70}")
-    print(f"High (≥65%):   {stats['high_dir_conf_count']:3d} predictions ({stats['high_dir_conf_pct']:.1f}%)")
-    print(f"  ↳ UP:   {stats['high_conf_up_count']}")
-    print(f"  ↳ DOWN: {stats['high_conf_down_count']}")
-    print(f"Medium (55-65%): {stats['medium_dir_conf_count']:3d} predictions ({stats['medium_dir_conf_pct']:.1f}%)")
-    print(f"Low (<55%):    {stats['low_dir_conf_count']:3d} predictions ({stats['low_dir_conf_pct']:.1f}%)")
+    print(f"Overall Accuracy: {stats['overall_accuracy']:.2%} ({stats['overall_correct']}/{total} correct)")
     
     print(f"\n{'='*70}")
-    print("CONFIDENCE SCORE DISTRIBUTION (for magnitude scaling)")
+    print("PREDICTION vs ACTUAL DISTRIBUTION")
     print(f"{'='*70}")
-    print(f"High (≥60%):   {stats['high_score_count']:3d} predictions ({stats['high_score_pct']:.1f}%)")
-    print(f"Medium (30-60%): {stats['medium_score_count']:3d} predictions ({stats['medium_score_pct']:.1f}%)")
-    print(f"Low (<30%):    {stats['low_score_count']:3d} predictions ({stats['low_score_pct']:.1f}%)")
+    print(f"Predicted UP:   {stats['total_up_predictions']:3d} ({stats['total_up_pct']:.1f}%)")
+    print(f"Predicted DOWN: {stats['total_down_predictions']:3d} ({stats['total_down_pct']:.1f}%)")
+    print(f"\nActual UP:      {stats['actual_up']:3d} ({stats['actual_up_pct']:.1f}%)")
+    print(f"Actual DOWN:    {stats['actual_down']:3d} ({stats['actual_down_pct']:.1f}%)")
+    print(f"\nUP Bias: {stats['up_bias']:+.1f}%", end="")
+    if abs(bias) > 10:
+        print(" ⚠️  SIGNIFICANT BIAS DETECTED")
+    elif abs(bias) > 5:
+        print(" ⚠️  Moderate bias")
+    else:
+        print(" ✓ Minimal bias")
     
     print(f"\n{'='*70}")
-    print("SUMMARY STATISTICS")
+    print("ACCURACY BY CONFIDENCE LEVEL")
     print(f"{'='*70}")
-    print(f"Average Direction Confidence: {stats['avg_dir_confidence']:.2%}")
-    print(f"Average Confidence Score:     {stats['avg_conf_score']:.2%}")
-    print(f"Range: {stats['min_dir_confidence']:.2%} - {stats['max_dir_confidence']:.2%}")
+    print(f"High (≥65%):     {stats['high_conf_count']:3d} predictions ({stats['high_conf_pct']:.1f}%)")
+    print(f"  ↳ Accuracy: {stats['high_conf_accuracy']:.2%} ({stats['high_conf_correct']}/{stats['high_conf_count']} correct)")
+    print(f"  ↳ UP: {stats['high_conf_up']}, DOWN: {stats['high_conf_down']}")
+    
+    print(f"\nMedium (55-65%): {stats['medium_conf_count']:3d} predictions ({stats['medium_conf_pct']:.1f}%)")
+    print(f"  ↳ Accuracy: {stats['medium_conf_accuracy']:.2%} ({stats['medium_conf_correct']}/{stats['medium_conf_count']} correct)")
+    
+    print(f"\nLow (<55%):      {stats['low_conf_count']:3d} predictions ({stats['low_conf_pct']:.1f}%)")
+    print(f"  ↳ Accuracy: {stats['low_conf_accuracy']:.2%} ({stats['low_conf_correct']}/{stats['low_conf_count']} correct)")
+    
+    print(f"\n{'='*70}")
+    print("CONFIDENCE QUALITY CHECK")
+    print(f"{'='*70}")
+    if stats['high_conf_accuracy'] > stats['medium_conf_accuracy'] > stats['low_conf_accuracy']:
+        print("✓✓ GOOD: Confidence correlates with accuracy")
+    elif stats['high_conf_accuracy'] > stats['overall_accuracy']:
+        print("✓ OK: High confidence is better than average")
+    else:
+        print("⚠️  WARNING: Confidence may not be reliable")
     
     return stats
 
@@ -138,6 +254,8 @@ def analyze_all_tickers(tickers):
                 all_stats.append(stats)
         except Exception as e:
             print(f"\n❌ ERROR analyzing {ticker}: {e}")
+            import traceback
+            traceback.print_exc()
             continue
     
     # Print aggregate summary
@@ -148,58 +266,96 @@ def analyze_all_tickers(tickers):
         
         df = pd.DataFrame(all_stats)
         
-        print("\nDirection Confidence Distribution:")
-        print(f"  High (≥65%):   {df['high_dir_conf_pct'].mean():.1f}% of predictions (avg)")
-        print(f"  Medium (55-65%): {df['medium_dir_conf_pct'].mean():.1f}% of predictions (avg)")
-        print(f"  Low (<55%):    {df['low_dir_conf_pct'].mean():.1f}% of predictions (avg)")
+        print("\nOverall Performance:")
+        print(f"  Average Accuracy: {df['overall_accuracy'].mean():.2%}")
+        print(f"  High Conf Accuracy: {df['high_conf_accuracy'].mean():.2%}")
+        print(f"  Medium Conf Accuracy: {df['medium_conf_accuracy'].mean():.2%}")
+        print(f"  Low Conf Accuracy: {df['low_conf_accuracy'].mean():.2%}")
         
-        print("\nConfidence Score Distribution:")
-        print(f"  High (≥60%):   {df['high_score_pct'].mean():.1f}% of predictions (avg)")
-        print(f"  Medium (30-60%): {df['medium_score_pct'].mean():.1f}% of predictions (avg)")
-        print(f"  Low (<30%):    {df['low_score_pct'].mean():.1f}% of predictions (avg)")
+        print("\nPrediction Distribution:")
+        print(f"  Predicted UP: {df['total_up_pct'].mean():.1f}% (avg)")
+        print(f"  Actual UP: {df['actual_up_pct'].mean():.1f}% (avg)")
+        print(f"  Average UP Bias: {df['up_bias'].mean():+.1f}%")
         
-        print("\nAverage Confidences:")
-        print(f"  Direction: {df['avg_dir_confidence'].mean():.2%}")
-        print(f"  Score:     {df['avg_conf_score'].mean():.2%}")
+        print("\nHigh Confidence Analysis:")
+        print(f"  Average % of predictions: {df['high_conf_pct'].mean():.1f}%")
+        print(f"  Average accuracy: {df['high_conf_accuracy'].mean():.2%}")
+        
+        # Calculate high confidence bias
+        avg_high_conf_up_pct = (df['high_conf_up'] / df['high_conf_count']).mean() * 100
+        print(f"  High conf UP predictions: {avg_high_conf_up_pct:.1f}% (avg)")
+        
+        if avg_high_conf_up_pct > 70:
+            print("  ⚠️  HIGH CONFIDENCE PREDICTIONS ARE HEAVILY SKEWED UP")
+        elif avg_high_conf_up_pct > 60:
+            print("  ⚠️  High confidence predictions lean UP")
+        elif avg_high_conf_up_pct < 40:
+            print("  ⚠️  High confidence predictions lean DOWN")
+        else:
+            print("  ✓ High confidence predictions are balanced")
         
         print("\n" + "="*70)
-        print("BY TICKER BREAKDOWN")
+        print("DETAILED BREAKDOWN BY TICKER")
         print("="*70)
-        print(f"{'Ticker':<8} {'High Dir%':<10} {'High Score%':<12} {'Avg Dir Conf':<15}")
+        print(f"{'Ticker':<8} {'Overall Acc':<12} {'High Acc':<10} {'High%':<8} {'UP Bias':<10}")
         print("-"*70)
         for _, row in df.iterrows():
-            print(f"{row['ticker']:<8} {row['high_dir_conf_pct']:>6.1f}%    "
-                  f"{row['high_score_pct']:>6.1f}%       {row['avg_dir_confidence']:>6.2%}")
+            print(f"{row['ticker']:<8} {row['overall_accuracy']:>6.2%}       "
+                  f"{row['high_conf_accuracy']:>6.2%}     "
+                  f"{row['high_conf_pct']:>5.1f}%   "
+                  f"{row['up_bias']:>+6.1f}%")
         
         print("\n" + "="*70)
-        print("KEY INSIGHT FOR CONDITIONAL MODELS:")
+        print("BIAS ANALYSIS")
         print("="*70)
-        avg_high_conf = df['high_dir_conf_pct'].mean()
-        print(f"\n✓ {avg_high_conf:.1f}% of predictions have ≥65% direction confidence")
-        print(f"  → These {avg_high_conf:.1f}% would use conditional (up/down) magnitude models")
-        print(f"\n✓ {100-avg_high_conf:.1f}% of predictions have <65% direction confidence")
-        print(f"  → These {100-avg_high_conf:.1f}% would use baseline magnitude model (safer)")
         
-        if avg_high_conf < 20:
-            print("\n⚠️  LOW high-confidence predictions suggests:")
-            print("   - Models are uncertain most of the time")
-            print("   - Conditional models won't be used often")
-            print("   - Focus on improving direction accuracy first")
-        elif avg_high_conf < 35:
-            print("\n✓ MODERATE high-confidence rate:")
-            print("   - Conditional models would be used occasionally")
-            print("   - Smart hybrid approach is appropriate")
+        significant_bias = df[abs(df['up_bias']) > 10]
+        if len(significant_bias) > 0:
+            print(f"\n⚠️  {len(significant_bias)}/{len(df)} tickers show SIGNIFICANT bias (>10%):")
+            for _, row in significant_bias.iterrows():
+                print(f"  {row['ticker']}: {row['up_bias']:+.1f}% bias")
         else:
-            print("\n✓✓ GOOD high-confidence rate:")
-            print("   - Conditional models would be used frequently")
-            print("   - Smart hybrid approach will provide significant value")
+            print("\n✓ No tickers show significant bias")
+        
+        print("\n" + "="*70)
+        print("RECOMMENDATIONS")
+        print("="*70)
+        
+        avg_bias = df['up_bias'].mean()
+        if abs(avg_bias) > 10:
+            print("\n⚠️  SYSTEMATIC UP BIAS DETECTED")
+            print("Possible causes:")
+            print("  1. Training period was mostly bullish (2020-2025)")
+            print("  2. Features favor UP predictions")
+            print("  3. Class imbalance in training data")
+            print("\nSuggestions:")
+            print("  - Remove 'Close' from features (price-dependent)")
+            print("  - Add class weights to balance UP/DOWN")
+            print("  - Train on longer period including bear markets")
+            print("  - Check if SPY_Return or market features are biased")
+        elif avg_bias > 5:
+            print("\n⚠️  Moderate UP bias present")
+            print("  - Consider removing 'Close' from features")
+            print("  - Monitor feature importance for bias sources")
+        else:
+            print("\n✓ Bias is within acceptable range")
+        
+        avg_high_acc = df['high_conf_accuracy'].mean()
+        avg_overall_acc = df['overall_accuracy'].mean()
+        
+        if avg_high_acc > avg_overall_acc + 0.05:
+            print("\n✓ Confidence calibration is working well")
+        else:
+            print("\n⚠️  Confidence may not be well-calibrated")
+            print("  - High confidence predictions should be more accurate")
+            print("  - Consider adjusting confidence thresholds")
 
 
 if __name__ == "__main__":
     TICKERS = ["AAPL", "MSFT", "GOOGL", "TSLA", "NVDA", "META", "AMZN"]
     
     print("="*70)
-    print("CONFIDENCE DISTRIBUTION ANALYSIS")
+    print("ENHANCED CONFIDENCE DISTRIBUTION ANALYSIS")
     print("="*70)
     print(f"Analyzing: {', '.join(TICKERS)}")
     

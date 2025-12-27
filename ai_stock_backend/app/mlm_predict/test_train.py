@@ -255,7 +255,7 @@ if __name__ == "__main__":
     TICKERS = ["AAPL", "MSFT", "GOOGL", "TSLA", "NVDA", "META", "AMZN"]
     
     end = datetime.today()
-    start = end - timedelta(days=365 * 5)
+    start = end - timedelta(days=365 * 6)
     
     print("="*70)
     print("STOCK PREDICTION MODEL TESTING")
