@@ -6,27 +6,45 @@ import Link from "next/link";
 
 type NewsItem = { headline: string; sentiment: string };
 type RedditItem = { post: string; sentiment: string };
-// avoid `any` by using a more general unknown-shaped object
 type Financials = Record<string, unknown>;
+
+// NEW: Add prediction type
+type PredictionData = {
+  stock: string;
+  current_price: number;
+  predicted_price: number;
+  direction: string;
+  confidence: number;
+  predicted_change_pct: number;
+  system_confidence: string;
+  model_info: {
+    direction_model: string;
+    magnitude_model: string;
+  };
+};
 
 export default function StockPage() {
   const params = useParams();
-  const raw = params.stock;           // ← changed `let` to `const`
+  const raw = params.stock;
   const ticker = Array.isArray(raw) ? raw[0] ?? "" : raw ?? "";
   const T = ticker.toUpperCase();
 
-  const [predictedPrice, setPredictedPrice] = useState<number | null>(null);
+  // UPDATED: Change from single number to full prediction object
+  const [prediction, setPrediction] = useState<PredictionData | null>(null);
   const [news, setNews] = useState<NewsItem[]>([]);
   const [reddit, setReddit] = useState<RedditItem[]>([]);
   const [financials, setFinancials] = useState<Financials | null>(null);
   const [direction, setDirection] = useState<string | null>(null);
   const [confidence, setConfidence] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState<boolean>(false);
 
   useEffect(() => {
     if (!T) return;
     const API =
       process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+
+    setLoading(true);
 
     Promise.all([
       fetch(`${API}/predict?stock=${T}`).then((r) =>
@@ -53,14 +71,15 @@ export default function StockPage() {
       ),
     ])
       .then(([priceJson, newsJson, redditJson, finJson]) => {
-        setPredictedPrice(priceJson.predicted_price ?? null);
+        setPrediction(priceJson);  // Now stores full prediction object
         setNews(newsJson.news ?? []);
         setReddit(redditJson.reddit ?? []);
         setFinancials(finJson.financials ?? null);
         setDirection(finJson.direction ?? null);
         setConfidence(finJson.confidence ?? null);
       })
-      .catch((err) => setError(String(err)));
+      .catch((err) => setError(String(err)))
+      .finally(() => setLoading(false));
   }, [T]);
 
   if (error) {
@@ -82,18 +101,66 @@ export default function StockPage() {
 
       <h1 className="text-4xl font-bold mb-8 text-center">{T} Dashboard</h1>
 
-      {/* 1. Price Prediction */}
+      {/* 1. UPDATED: Price Prediction Section */}
       <section className="mb-8 p-6 bg-white rounded-lg shadow">
         <h2 className="text-2xl font-semibold mb-4">Price Prediction</h2>
-        {predictedPrice !== null
-          ? <p className="text-xl">
-              Predicted Price: <strong>${predictedPrice.toFixed(2)}</strong>
-            </p>
-          : <p className="text-gray-500">Loading price prediction…</p>
-        }
+        {loading ? (
+          <p className="text-gray-500">Training models and generating prediction...</p>
+        ) : prediction ? (
+          <div className="space-y-3">
+            <div className="flex justify-between items-center">
+              <span className="text-lg">Current Price:</span>
+              <span className="text-xl font-semibold">${prediction.current_price.toFixed(2)}</span>
+            </div>
+            
+            <div className="flex justify-between items-center">
+              <span className="text-lg">Predicted Price:</span>
+              <span className="text-xl font-bold text-blue-600">
+                ${prediction.predicted_price.toFixed(2)}
+              </span>
+            </div>
+            
+            <div className="flex justify-between items-center">
+              <span className="text-lg">Direction:</span>
+              <span className={`text-xl font-bold ${
+                prediction.direction === "UP" ? "text-green-600" : "text-red-600"
+              }`}>
+                {prediction.direction} {prediction.direction === "UP" ? "↑" : "↓"}
+              </span>
+            </div>
+            
+            <div className="flex justify-between items-center">
+              <span className="text-lg">Predicted Change:</span>
+              <span className={`text-xl font-semibold ${
+                prediction.predicted_change_pct > 0 ? "text-green-600" : "text-red-600"
+              }`}>
+                {prediction.predicted_change_pct > 0 ? "+" : ""}
+                {prediction.predicted_change_pct.toFixed(2)}%
+              </span>
+            </div>
+            
+            <div className="flex justify-between items-center">
+              <span className="text-lg">Confidence:</span>
+              <span className="text-xl font-semibold">
+                {(prediction.confidence * 100).toFixed(1)}%
+              </span>
+            </div>
+            
+            <div className="mt-4 pt-4 border-t border-gray-200">
+              <p className="text-sm text-gray-600">
+                System Confidence: <span className="font-semibold uppercase">{prediction.system_confidence}</span>
+              </p>
+              <p className="text-xs text-gray-500 mt-1">
+                Using {prediction.model_info.direction_model} (direction) + {prediction.model_info.magnitude_model} (magnitude)
+              </p>
+            </div>
+          </div>
+        ) : (
+          <p className="text-gray-500">Loading prediction...</p>
+        )}
       </section>
 
-      {/* 2. News Sentiment */}
+      {/* 2. News Sentiment - UNCHANGED */}
       <section className="mb-8 p-6 bg-white rounded-lg shadow">
         <h2 className="text-2xl font-semibold mb-4">News Sentiment</h2>
         <ul className="list-disc pl-5">
@@ -108,7 +175,7 @@ export default function StockPage() {
         </ul>
       </section>
 
-      {/* 3. Reddit Sentiment */}
+      {/* 3. Reddit Sentiment - UNCHANGED */}
       <section className="mb-8 p-6 bg-white rounded-lg shadow">
         <h2 className="text-2xl font-semibold mb-4">Reddit Sentiment</h2>
         <ul className="list-disc pl-5">
@@ -123,7 +190,7 @@ export default function StockPage() {
         </ul>
       </section>
 
-      {/* 4. Financials & Direction */}
+      {/* 4. Financials & Direction - UNCHANGED */}
       <section className="p-6 bg-white rounded-lg shadow">
         <h2 className="text-2xl font-semibold mb-4">Financials & Prediction</h2>
         {financials
