@@ -266,6 +266,7 @@ def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=F
         - magnitude: Magnitude model info and metrics
         - confidence: Overall system confidence (high/medium/low)
         - ticker: Stock ticker
+        - latest_features: Today's features for predicting tomorrow
         - predict: Function to make predictions on new data
         - test_data: (optional) Test set data for evaluation
     """
@@ -284,7 +285,11 @@ def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=F
             print("Failed to generate features.")
         return None
 
-    # Align the data
+    # --- CRITICAL: Capture today's features BEFORE removing the last row ---
+    # This is what we need to predict tomorrow!
+    latest_features = X.iloc[-1:]
+    
+    # Align the data (remove last row for training)
     X = X.iloc[:-1]
     y_price = y_price.iloc[:-1]
     current_prices = stock_data['Close'].iloc[:-1].values
@@ -573,7 +578,8 @@ def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=F
             "ensemble": mag_ensemble
         },
         "confidence": confidence,
-        "ticker": ticker
+        "ticker": ticker,
+        "latest_features": latest_features  # <--- ADDED: Today's features for predicting tomorrow
     }
     
     # Add prediction function as a method
