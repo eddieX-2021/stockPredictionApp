@@ -4,6 +4,7 @@ export const dynamic = "force-dynamic";
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+
 import { StatCard } from "../components/ui/StatCard";
 import { Badge } from "../components/ui/Badge";
 import { SentimentBar } from "../components/ui/SentimentBar";
@@ -16,8 +17,8 @@ type PredictionData = {
   stock: string;
   current_price: number;
   predicted_price: number;
-  direction: string; // "UP" | "DOWN" (assumed)
-  confidence: number; // 0..1
+  direction: string;
+  confidence: number;
   predicted_change_pct: number;
   system_confidence: string;
   model_info: {
@@ -52,44 +53,71 @@ function normalizeSentiment(s: string) {
   return "neutral";
 }
 
-function pickKeyFinancials(fin: Financials | null) {
-  if (!fin) return [];
+/** ---------- Financials helpers (5-stat comparison) ---------- */
+function formatMoneyCompact(n: any) {
+  if (typeof n !== "number" || !Number.isFinite(n)) return "—";
+  return (
+    "$" +
+    n.toLocaleString(undefined, {
+      notation: "compact",
+      maximumFractionDigits: 2,
+    })
+  );
+}
 
-  // Try common names first, but don’t break if backend changes.
-  const candidates: Array<[string, string[]]> = [
-    ["Market Cap", ["marketCap", "market_cap", "marketcapitalization"]],
-    ["P/E", ["pe", "peRatio", "trailingPE", "p_e"]],
-    ["EPS", ["eps", "ttmEPS", "earningsPerShare"]],
-    ["Revenue", ["revenue", "totalRevenue"]],
-    ["Gross Margin", ["grossMargin", "gross_margin"]],
-    ["Operating Margin", ["operatingMargin", "operating_margin"]],
-    ["Profit Margin", ["profitMargin", "profit_margin"]],
-    ["ROE", ["roe", "returnOnEquity"]],
-    ["Debt/Equity", ["debtToEquity", "debt_equity"]],
-    ["Free Cash Flow", ["freeCashFlow", "free_cash_flow", "fcf"]],
-  ];
+function getVal(obj: any, key: string) {
+  if (!obj) return undefined;
+  if (obj[key] !== undefined && obj[key] !== null) return obj[key];
 
-  const found: Array<{ label: string; value: any }> = [];
+  const kLower = key.toLowerCase();
+  const found = Object.keys(obj).find((k) => k.toLowerCase() === kLower);
+  if (found) return obj[found];
 
-  for (const [label, keys] of candidates) {
-    for (const k of keys) {
-      if (fin[k] !== undefined && fin[k] !== null) {
-        found.push({ label, value: fin[k] });
-        break;
-      }
+  return undefined;
+}
+
+type MetricDef = {
+  label: string;
+  key: string;
+  format: (n: any) => string;
+};
+
+const TOP_METRICS: MetricDef[] = [
+  { label: "Revenue", key: "Total Revenue", format: formatMoneyCompact },
+  { label: "Net Income", key: "Net Income", format: formatMoneyCompact },
+  { label: "EBITDA", key: "EBITDA", format: formatMoneyCompact },
+  {
+    label: "Operating Income",
+    key: "Total Operating Income As Reported",
+    format: formatMoneyCompact,
+  },
+  {
+    label: "Diluted EPS",
+    key: "Diluted EPS",
+    format: (n) => (typeof n === "number" ? n.toFixed(2) : "—"),
+  },
+];
+
+function deltaText(latest: any, prev: any) {
+  if (typeof latest !== "number" || typeof prev !== "number") return null;
+  if (!Number.isFinite(latest) || !Number.isFinite(prev) || prev === 0) return null;
+  const change = (latest - prev) / Math.abs(prev);
+  const sign = change >= 0 ? "+" : "";
+  return `${sign}${(change * 100).toFixed(1)}%`;
+}
+
+async function fetchJsonOrThrow(url: string, init?: RequestInit) {
+  try {
+    const res = await fetch(url, init);
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`${url} -> ${res.status} ${res.statusText}${text ? ` | ${text}` : ""}`);
     }
+    return res.json();
+  } catch (e: any) {
+    // This is where "Failed to fetch" usually ends up (CORS / network)
+    throw new Error(`${url} -> ${e?.message ?? String(e)}`);
   }
-
-  // If we found nothing, fall back to “top numeric fields”
-  if (found.length === 0) {
-    const numeric = Object.entries(fin)
-      .filter(([, v]) => typeof v === "number" && Number.isFinite(v))
-      .slice(0, 10)
-      .map(([k, v]) => ({ label: k, value: v }));
-    return numeric;
-  }
-
-  return found;
 }
 
 export default function StockPage() {
@@ -107,47 +135,66 @@ export default function StockPage() {
   const [confidence2, setConfidence2] = useState<number | null>(null);
 
   const [error, setError] = useState<string | null>(null);
+  const [warnings, setWarnings] = useState<string[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
 
   useEffect(() => {
     if (!T) return;
+
     const API = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
-    setLoading(true);
-    setError(null);
+    (async () => {
+      setLoading(true);
+      setError(null);
+      setWarnings([]);
 
-    Promise.all([
-      fetch(`${API}/predict?stock=${T}`).then((r) =>
-        r.ok ? r.json() : Promise.reject("Prediction API failed")
-      ),
-      fetch(`${API}/api/news`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ticker: T }),
-      }).then((r) => (r.ok ? r.json() : Promise.reject("News API failed"))),
-      fetch(`${API}/api/reddit`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ticker: T }),
-      }).then((r) => (r.ok ? r.json() : Promise.reject("Reddit API failed"))),
-      fetch(`${API}/api/financials`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ticker: T }),
-      }).then((r) => (r.ok ? r.json() : Promise.reject("Financials API failed"))),
-    ])
-      .then(([predJson, newsJson, redditJson, finJson]) => {
-        setPrediction(predJson);
-        setNews(newsJson.news ?? []);
-        setReddit(redditJson.reddit ?? []);
-        setFinancials(finJson.financials ?? null);
+      const results = await Promise.allSettled([
+        fetchJsonOrThrow(`${API}/predict?stock=${encodeURIComponent(T)}`),
+        fetchJsonOrThrow(`${API}/api/news`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ticker: T }),
+        }),
+        fetchJsonOrThrow(`${API}/api/reddit`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ticker: T }),
+        }),
+        fetchJsonOrThrow(`${API}/api/financials`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ticker: T }),
+        }),
+      ]);
 
-        // You had these in your current file; keep them if your backend returns them.
-        setDirection2(finJson.direction ?? null);
-        setConfidence2(finJson.confidence ?? null);
-      })
-      .catch((err) => setError(String(err)))
-      .finally(() => setLoading(false));
+      const [predRes, newsRes, redditRes, finRes] = results;
+
+      if (predRes.status === "fulfilled") setPrediction(predRes.value);
+      else {
+        setError(String(predRes.reason));
+        setLoading(false);
+        return;
+      }
+
+      const nextWarnings: string[] = [];
+
+      if (newsRes.status === "fulfilled") setNews(newsRes.value?.news ?? []);
+      else nextWarnings.push(String(newsRes.reason));
+
+      if (redditRes.status === "fulfilled") setReddit(redditRes.value?.reddit ?? []);
+      else nextWarnings.push(String(redditRes.reason));
+
+      if (finRes.status === "fulfilled") {
+        setFinancials(finRes.value?.financials ?? null);
+        setDirection2(finRes.value?.direction ?? null);
+        setConfidence2(finRes.value?.confidence ?? null);
+      } else {
+        nextWarnings.push(String(finRes.reason));
+      }
+
+      setWarnings(nextWarnings);
+      setLoading(false);
+    })();
   }, [T]);
 
   const sentimentSummary = useMemo(() => {
@@ -160,11 +207,8 @@ export default function StockPage() {
       }
       return res;
     };
-
     return { news: count(news), reddit: count(reddit) };
   }, [news, reddit]);
-
-  const keyFinancials = useMemo(() => pickKeyFinancials(financials), [financials]);
 
   if (error) {
     return (
@@ -176,6 +220,10 @@ export default function StockPage() {
           <div className="mt-6 rounded-2xl border border-border bg-card p-6">
             <div className="text-lg font-semibold">Something went wrong</div>
             <p className="mt-2 text-sm text-muted-foreground">{error}</p>
+            <p className="mt-3 text-xs text-muted-foreground">
+              If this says “Failed to fetch”, it’s almost always CORS or the backend is not reachable.
+              Open <span className="font-medium">http://localhost:8000/docs</span> to confirm backend is up.
+            </p>
           </div>
         </div>
       </div>
@@ -184,6 +232,10 @@ export default function StockPage() {
 
   const dir = prediction?.direction?.toUpperCase() ?? "—";
   const changePct = prediction?.predicted_change_pct ?? NaN;
+
+  // ✅ your backend returns "prev", not "previous" :contentReference[oaicite:4]{index=4}
+  const latestObj = (financials as any)?.latest;
+  const prevObj = (financials as any)?.prev;
 
   return (
     <div className="min-h-screen bg-bg">
@@ -213,45 +265,49 @@ export default function StockPage() {
       </header>
 
       <main className="mx-auto max-w-6xl px-6 py-10 space-y-10">
+        {/* Warnings */}
+        {warnings.length > 0 ? (
+          <section className="rounded-2xl border border-border bg-card p-5">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="font-semibold">Some data sources are unavailable</div>
+                <div className="mt-1 text-sm text-muted-foreground">
+                  The dashboard still loads with what’s available.
+                </div>
+              </div>
+              <Badge tone="warn">Partial</Badge>
+            </div>
+            <ul className="mt-3 list-disc pl-5 text-sm text-muted-foreground space-y-1">
+              {warnings.map((w, i) => (
+                <li key={i}>{w}</li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+
         {/* Top stats */}
         <section className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-          <StatCard
-            title="Current Price"
-            value={prediction ? money(prediction.current_price) : "—"}
-            subvalue="Latest available price"
-          />
+          <StatCard title="Current Price" value={prediction ? money(prediction.current_price) : "—"} subvalue="Latest available price" />
           <StatCard
             title="Predicted Price"
             value={prediction ? money(prediction.predicted_price) : "—"}
             subvalue="Model estimate (next step)"
-            badge={
-              prediction
-                ? { text: dir === "UP" ? "UP" : dir === "DOWN" ? "DOWN" : "—", tone: toneFromDirection(dir) as any }
-                : undefined
-            }
+            badge={prediction ? { text: dir === "UP" ? "UP" : dir === "DOWN" ? "DOWN" : "—", tone: toneFromDirection(dir) as any } : undefined}
           />
           <StatCard
             title="Predicted Change"
             value={prediction ? pct(prediction.predicted_change_pct) : "—"}
             subvalue={prediction ? `Direction: ${dir}` : "—"}
-            badge={
-              prediction
-                ? { text: prediction.system_confidence?.toUpperCase?.() ?? "—", tone: "neutral" }
-                : undefined
-            }
+            badge={prediction ? { text: prediction.system_confidence?.toUpperCase?.() ?? "—", tone: "neutral" } : undefined}
           />
           <StatCard
             title="Confidence"
             value={prediction ? `${(prediction.confidence * 100).toFixed(1)}%` : "—"}
-            subvalue={
-              prediction
-                ? `Models: ${prediction.model_info.direction_model} + ${prediction.model_info.magnitude_model}`
-                : "—"
-            }
+            subvalue={prediction ? `Models: ${prediction.model_info.direction_model} + ${prediction.model_info.magnitude_model}` : "—"}
           />
         </section>
 
-        {/* Confidence bar + note */}
+        {/* Confidence bar */}
         <section className="rounded-2xl border border-border bg-card p-6">
           <div className="flex items-start justify-between gap-4">
             <div>
@@ -268,29 +324,17 @@ export default function StockPage() {
           </div>
 
           <div className="mt-4 h-3 w-full rounded-full bg-black/5 overflow-hidden">
-            <div
-              className="h-full bg-black"
-              style={{ width: `${prediction ? Math.round(prediction.confidence * 100) : 0}%` }}
-            />
+            <div className="h-full bg-black" style={{ width: `${prediction ? Math.round(prediction.confidence * 100) : 0}%` }} />
           </div>
 
           <div className="mt-3 text-sm text-muted-foreground">
-            {prediction ? (
-              <>
-                System confidence:{" "}
-                <span className="font-medium text-foreground">
-                  {prediction.system_confidence?.toUpperCase?.() ?? "—"}
-                </span>{" "}
-                • Predicted move:{" "}
-                <span className="font-medium text-foreground">{pct(changePct)}</span>
-              </>
-            ) : (
-              loading ? "Generating prediction…" : "No prediction yet."
-            )}
+            System confidence:{" "}
+            <span className="font-medium text-foreground">{prediction?.system_confidence?.toUpperCase?.() ?? "—"}</span>{" "}
+            • Predicted move: <span className="font-medium text-foreground">{pct(changePct)}</span>
           </div>
         </section>
 
-        {/* Sentiment overview */}
+        {/* Sentiment */}
         <section className="grid gap-4 lg:grid-cols-2">
           <div className="rounded-2xl border border-border bg-card p-6">
             <div className="flex items-center justify-between">
@@ -301,32 +345,6 @@ export default function StockPage() {
               <SentimentBar label="Positive" value={sentimentSummary.news.positive} total={sentimentSummary.news.total} />
               <SentimentBar label="Neutral" value={sentimentSummary.news.neutral} total={sentimentSummary.news.total} />
               <SentimentBar label="Negative" value={sentimentSummary.news.negative} total={sentimentSummary.news.total} />
-            </div>
-
-            <div className="mt-6">
-              <div className="text-sm font-medium">Top headlines</div>
-              <ul className="mt-2 space-y-2">
-                {(news ?? []).slice(0, 6).map((n, i) => {
-                  const s = normalizeSentiment(n.sentiment);
-                  return (
-                    <li key={i} className="rounded-xl border border-border bg-white p-3">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="text-sm leading-snug">{n.headline}</div>
-                        <Badge
-                          tone={s === "positive" ? "good" : s === "negative" ? "bad" : "neutral"}
-                        >
-                          {s}
-                        </Badge>
-                      </div>
-                    </li>
-                  );
-                })}
-                {!news?.length && (
-                  <li className="text-sm text-muted-foreground">
-                    {loading ? "Loading news…" : "No news items returned."}
-                  </li>
-                )}
-              </ul>
             </div>
           </div>
 
@@ -340,32 +358,6 @@ export default function StockPage() {
               <SentimentBar label="Neutral" value={sentimentSummary.reddit.neutral} total={sentimentSummary.reddit.total} />
               <SentimentBar label="Negative" value={sentimentSummary.reddit.negative} total={sentimentSummary.reddit.total} />
             </div>
-
-            <div className="mt-6">
-              <div className="text-sm font-medium">Sample posts</div>
-              <ul className="mt-2 space-y-2">
-                {(reddit ?? []).slice(0, 6).map((r, i) => {
-                  const s = normalizeSentiment(r.sentiment);
-                  return (
-                    <li key={i} className="rounded-xl border border-border bg-white p-3">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="text-sm leading-snug">{r.post}</div>
-                        <Badge
-                          tone={s === "positive" ? "good" : s === "negative" ? "bad" : "neutral"}
-                        >
-                          {s}
-                        </Badge>
-                      </div>
-                    </li>
-                  );
-                })}
-                {!reddit?.length && (
-                  <li className="text-sm text-muted-foreground">
-                    {loading ? "Loading posts…" : "No Reddit posts returned."}
-                  </li>
-                )}
-              </ul>
-            </div>
           </div>
         </section>
 
@@ -375,7 +367,7 @@ export default function StockPage() {
             <div>
               <div className="text-lg font-semibold">Key financials</div>
               <p className="mt-1 text-sm text-muted-foreground">
-                We only show the most useful metrics first. Raw data is available below.
+                Quick comparison (latest vs previous). Raw data is still available below.
               </p>
             </div>
 
@@ -386,43 +378,47 @@ export default function StockPage() {
             ) : null}
           </div>
 
-          <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {keyFinancials.map((kv) => (
-              <div key={kv.label} className="rounded-xl border border-border bg-white p-4">
-                <div className="text-sm text-muted-foreground">{kv.label}</div>
-                <div className="mt-1 text-base font-semibold break-words">
-                  {typeof kv.value === "number"
-                    ? kv.label.toLowerCase().includes("margin") || kv.label === "ROE"
-                      ? `${(kv.value * 100).toFixed(2)}%`
-                      : kv.value.toLocaleString()
-                    : String(kv.value)}
-                </div>
-              </div>
-            ))}
+          <div className="mt-5 overflow-hidden rounded-2xl border border-border bg-white">
+            <div className="grid grid-cols-12 gap-0 border-b border-border bg-black/5 px-4 py-3 text-xs font-medium text-muted-foreground">
+              <div className="col-span-5">Metric</div>
+              <div className="col-span-3 text-right">Latest</div>
+              <div className="col-span-3 text-right">Previous</div>
+              <div className="col-span-1 text-right">Δ</div>
+            </div>
 
-            {!financials && (
-              <div className="text-sm text-muted-foreground">
-                {loading ? "Loading financials…" : "No financials returned."}
-              </div>
-            )}
+            <div className="divide-y divide-border">
+              {TOP_METRICS.map((m) => {
+                const latest = getVal(latestObj, m.key);
+                const prev = getVal(prevObj, m.key);
+
+                const latestStr = m.format(latest);
+                const prevStr = m.format(prev);
+
+                const d = deltaText(latest, prev);
+                const dTone =
+                  d && d.startsWith("+") ? "text-emerald-700" : d ? "text-rose-700" : "text-muted-foreground";
+
+                return (
+                  <div key={m.label} className="grid grid-cols-12 items-center px-4 py-3">
+                    <div className="col-span-5">
+                      <div className="text-sm font-medium">{m.label}</div>
+                      <div className="text-xs text-muted-foreground">{m.key}</div>
+                    </div>
+                    <div className="col-span-3 text-right font-semibold tabular-nums">{latestStr}</div>
+                    <div className="col-span-3 text-right text-muted-foreground tabular-nums">{prevStr}</div>
+                    <div className={`col-span-1 text-right text-xs font-medium tabular-nums ${dTone}`}>{d ?? "—"}</div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
 
-          {/* Raw + advanced */}
           <details className="mt-6 rounded-xl border border-border bg-white p-4">
-            <summary className="cursor-pointer select-none font-medium">
-              Advanced: raw financial JSON
-            </summary>
+            <summary className="cursor-pointer select-none font-medium">Advanced: raw financial JSON</summary>
             <pre className="mt-3 overflow-auto rounded-lg bg-black/5 p-4 text-xs">
               {financials ? JSON.stringify(financials, null, 2) : "—"}
             </pre>
           </details>
-        </section>
-
-        <section className="rounded-2xl border border-border bg-card p-6">
-          <div className="font-medium">Reminder</div>
-          <p className="mt-2 text-sm text-muted-foreground">
-            This dashboard is not financial advice. Use it to summarize signals faster—not to replace research.
-          </p>
         </section>
       </main>
     </div>
