@@ -35,12 +35,16 @@ app = FastAPI(
 # ─── CORS ─────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://stock-prediction-app-two.vercel.app","http://localhost:3000"   ],  # your Next.js origin
+    allow_origins=[
+        "https://stock-prediction-app-two.vercel.app",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+    allow_origin_regex=r"^http:\/\/localhost:\d+$|^http:\/\/127\.0\.0\.1:\d+$",
     allow_credentials=True,
-    allow_methods=["*"],  # allow GET, POST, etc.
+    allow_methods=["*"],
     allow_headers=["*"],
 )
-
 # include any externally defined routes
 app.include_router(router)
 
