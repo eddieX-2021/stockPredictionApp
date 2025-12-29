@@ -79,31 +79,27 @@ async def reddit_sentiment(req: TickerRequest):
     }
 
 
+from app.services.json_safe import json_safe
+
 @app.post("/api/financials")
 async def financials(req: TickerRequest):
     t = req.ticker.strip().upper()
 
-    # 1) fetch raw financial data
     try:
         fin_data = fetch_financials(t)
+        direction, confidence = predict_stock_movement(t, fin_data)
     except Exception as e:
-        raise HTTPException(status_code=404, detail=f"Financial fetch failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-    # 2) get direction & confidence
-    try:
-        direction, confidence = predict_stock_movement(t)
-    except FileNotFoundError as fnf:
-        raise HTTPException(status_code=500, detail=str(fnf))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Prediction error: {e}")
-
-    # 3) return everything
-    return {
+    response = {
         "ticker": t,
         "financials": fin_data,
-        "direction": direction,    # "UP" or "DOWN"
-        "confidence": confidence,  # 0.0–1.0 float
+        "direction": direction,
+        "confidence": confidence,
     }
+
+    # 🔥 THIS PREVENTS THE CRASH
+    return json_safe(response)
 
 
 # ─── CLI / TRAIN (optional) ────────────────────────────────────────
