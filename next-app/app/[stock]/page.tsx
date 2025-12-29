@@ -1,20 +1,23 @@
 "use client";
 export const dynamic = "force-dynamic";
-import { useState, useEffect } from "react";
+
+import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import { StatCard } from "../components/ui/StatCard";
+import { Badge } from "../components/ui/Badge";
+import { SentimentBar } from "../components/ui/SentimentBar";
 
 type NewsItem = { headline: string; sentiment: string };
 type RedditItem = { post: string; sentiment: string };
-type Financials = Record<string, unknown>;
+type Financials = Record<string, any>;
 
-// NEW: Add prediction type
 type PredictionData = {
   stock: string;
   current_price: number;
   predicted_price: number;
-  direction: string;
-  confidence: number;
+  direction: string; // "UP" | "DOWN" (assumed)
+  confidence: number; // 0..1
   predicted_change_pct: number;
   system_confidence: string;
   model_info: {
@@ -23,32 +26,99 @@ type PredictionData = {
   };
 };
 
+function money(n: number) {
+  if (!Number.isFinite(n)) return "—";
+  return n.toLocaleString(undefined, { style: "currency", currency: "USD" });
+}
+
+function pct(n: number) {
+  if (!Number.isFinite(n)) return "—";
+  const sign = n > 0 ? "+" : "";
+  return `${sign}${n.toFixed(2)}%`;
+}
+
+function toneFromDirection(dir: string) {
+  const d = (dir || "").toUpperCase();
+  if (d === "UP") return "good";
+  if (d === "DOWN") return "bad";
+  return "neutral";
+}
+
+function normalizeSentiment(s: string) {
+  const x = (s || "").toLowerCase();
+  if (x.includes("pos")) return "positive";
+  if (x.includes("neg")) return "negative";
+  if (x.includes("neu")) return "neutral";
+  return "neutral";
+}
+
+function pickKeyFinancials(fin: Financials | null) {
+  if (!fin) return [];
+
+  // Try common names first, but don’t break if backend changes.
+  const candidates: Array<[string, string[]]> = [
+    ["Market Cap", ["marketCap", "market_cap", "marketcapitalization"]],
+    ["P/E", ["pe", "peRatio", "trailingPE", "p_e"]],
+    ["EPS", ["eps", "ttmEPS", "earningsPerShare"]],
+    ["Revenue", ["revenue", "totalRevenue"]],
+    ["Gross Margin", ["grossMargin", "gross_margin"]],
+    ["Operating Margin", ["operatingMargin", "operating_margin"]],
+    ["Profit Margin", ["profitMargin", "profit_margin"]],
+    ["ROE", ["roe", "returnOnEquity"]],
+    ["Debt/Equity", ["debtToEquity", "debt_equity"]],
+    ["Free Cash Flow", ["freeCashFlow", "free_cash_flow", "fcf"]],
+  ];
+
+  const found: Array<{ label: string; value: any }> = [];
+
+  for (const [label, keys] of candidates) {
+    for (const k of keys) {
+      if (fin[k] !== undefined && fin[k] !== null) {
+        found.push({ label, value: fin[k] });
+        break;
+      }
+    }
+  }
+
+  // If we found nothing, fall back to “top numeric fields”
+  if (found.length === 0) {
+    const numeric = Object.entries(fin)
+      .filter(([, v]) => typeof v === "number" && Number.isFinite(v))
+      .slice(0, 10)
+      .map(([k, v]) => ({ label: k, value: v }));
+    return numeric;
+  }
+
+  return found;
+}
+
 export default function StockPage() {
   const params = useParams();
   const raw = params.stock;
   const ticker = Array.isArray(raw) ? raw[0] ?? "" : raw ?? "";
   const T = ticker.toUpperCase();
 
-  // UPDATED: Change from single number to full prediction object
   const [prediction, setPrediction] = useState<PredictionData | null>(null);
   const [news, setNews] = useState<NewsItem[]>([]);
   const [reddit, setReddit] = useState<RedditItem[]>([]);
   const [financials, setFinancials] = useState<Financials | null>(null);
-  const [direction, setDirection] = useState<string | null>(null);
-  const [confidence, setConfidence] = useState<number | null>(null);
+
+  const [direction2, setDirection2] = useState<string | null>(null);
+  const [confidence2, setConfidence2] = useState<number | null>(null);
+
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
 
   useEffect(() => {
     if (!T) return;
-    const API =
-      process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+    const API = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
     setLoading(true);
+    setError(null);
 
     Promise.all([
       fetch(`${API}/predict?stock=${T}`).then((r) =>
-        r.ok ? r.json() : Promise.reject("Price API failed")
+        r.ok ? r.json() : Promise.reject("Prediction API failed")
       ),
       fetch(`${API}/api/news`, {
         method: "POST",
@@ -59,157 +129,302 @@ export default function StockPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ticker: T }),
-      }).then((r) =>
-        r.ok ? r.json() : Promise.reject("Reddit API failed")
-      ),
+      }).then((r) => (r.ok ? r.json() : Promise.reject("Reddit API failed"))),
       fetch(`${API}/api/financials`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ticker: T }),
-      }).then((r) =>
-        r.ok ? r.json() : Promise.reject("Financials API failed")
-      ),
+      }).then((r) => (r.ok ? r.json() : Promise.reject("Financials API failed"))),
     ])
-      .then(([priceJson, newsJson, redditJson, finJson]) => {
-        setPrediction(priceJson);  // Now stores full prediction object
+      .then(([predJson, newsJson, redditJson, finJson]) => {
+        setPrediction(predJson);
         setNews(newsJson.news ?? []);
         setReddit(redditJson.reddit ?? []);
         setFinancials(finJson.financials ?? null);
-        setDirection(finJson.direction ?? null);
-        setConfidence(finJson.confidence ?? null);
+
+        // You had these in your current file; keep them if your backend returns them.
+        setDirection2(finJson.direction ?? null);
+        setConfidence2(finJson.confidence ?? null);
       })
       .catch((err) => setError(String(err)))
       .finally(() => setLoading(false));
   }, [T]);
 
+  const sentimentSummary = useMemo(() => {
+    const count = (items: Array<{ sentiment: string }>) => {
+      const res = { positive: 0, negative: 0, neutral: 0, total: 0 };
+      for (const it of items) {
+        const k = normalizeSentiment(it.sentiment) as "positive" | "negative" | "neutral";
+        res[k] += 1;
+        res.total += 1;
+      }
+      return res;
+    };
+
+    return { news: count(news), reddit: count(reddit) };
+  }, [news, reddit]);
+
+  const keyFinancials = useMemo(() => pickKeyFinancials(financials), [financials]);
+
   if (error) {
     return (
-      <p className="text-red-600 p-6">
-        Error: {error}
-      </p>
+      <div className="min-h-screen bg-bg">
+        <div className="mx-auto max-w-6xl px-6 py-10">
+          <Link href="/" className="text-sm text-muted-foreground hover:text-foreground">
+            ← Back
+          </Link>
+          <div className="mt-6 rounded-2xl border border-border bg-card p-6">
+            <div className="text-lg font-semibold">Something went wrong</div>
+            <p className="mt-2 text-sm text-muted-foreground">{error}</p>
+          </div>
+        </div>
+      </div>
     );
   }
 
+  const dir = prediction?.direction?.toUpperCase() ?? "—";
+  const changePct = prediction?.predicted_change_pct ?? NaN;
+
   return (
-    <div className="min-h-screen bg-gray-50 p-8">
-      {/* Home Button */}
-      <Link href="/" className="absolute top-4 left-4">
-        <button className="bg-gray-50 border-2 border-black text-black font-semibold px-4 py-2 rounded hover:bg-gray-100 transition">
-          Home
-        </button>
-      </Link>
-
-      <h1 className="text-4xl font-bold mb-8 text-center">{T} Dashboard</h1>
-
-      {/* 1. UPDATED: Price Prediction Section */}
-      <section className="mb-8 p-6 bg-white rounded-lg shadow">
-        <h2 className="text-2xl font-semibold mb-4">Price Prediction</h2>
-        {loading ? (
-          <p className="text-gray-500">Training models and generating prediction...</p>
-        ) : prediction ? (
-          <div className="space-y-3">
-            <div className="flex justify-between items-center">
-              <span className="text-lg">Current Price:</span>
-              <span className="text-xl font-semibold">${prediction.current_price.toFixed(2)}</span>
-            </div>
-            
-            <div className="flex justify-between items-center">
-              <span className="text-lg">Predicted Price:</span>
-              <span className="text-xl font-bold text-blue-600">
-                ${prediction.predicted_price.toFixed(2)}
-              </span>
-            </div>
-            
-            <div className="flex justify-between items-center">
-              <span className="text-lg">Direction:</span>
-              <span className={`text-xl font-bold ${
-                prediction.direction === "UP" ? "text-green-600" : "text-red-600"
-              }`}>
-                {prediction.direction} {prediction.direction === "UP" ? "↑" : "↓"}
-              </span>
-            </div>
-            
-            <div className="flex justify-between items-center">
-              <span className="text-lg">Predicted Change:</span>
-              <span className={`text-xl font-semibold ${
-                prediction.predicted_change_pct > 0 ? "text-green-600" : "text-red-600"
-              }`}>
-                {prediction.predicted_change_pct > 0 ? "+" : ""}
-                {prediction.predicted_change_pct.toFixed(2)}%
-              </span>
-            </div>
-            
-            <div className="flex justify-between items-center">
-              <span className="text-lg">Confidence:</span>
-              <span className="text-xl font-semibold">
-                {(prediction.confidence * 100).toFixed(1)}%
-              </span>
-            </div>
-            
-            <div className="mt-4 pt-4 border-t border-gray-200">
-              <p className="text-sm text-gray-600">
-                System Confidence: <span className="font-semibold uppercase">{prediction.system_confidence}</span>
-              </p>
-              <p className="text-xs text-gray-500 mt-1">
-                Using {prediction.model_info.direction_model} (direction) + {prediction.model_info.magnitude_model} (magnitude)
-              </p>
+    <div className="min-h-screen bg-bg">
+      <header className="border-b border-border bg-card/60 backdrop-blur">
+        <div className="mx-auto max-w-6xl px-6 py-5 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Link href="/" className="text-sm text-muted-foreground hover:text-foreground">
+              ← Back
+            </Link>
+            <div className="h-6 w-px bg-border" />
+            <div>
+              <div className="text-sm text-muted-foreground">Dashboard</div>
+              <div className="text-xl font-semibold tracking-tight">{T}</div>
             </div>
           </div>
-        ) : (
-          <p className="text-gray-500">Loading prediction...</p>
-        )}
-      </section>
 
-      {/* 2. News Sentiment - UNCHANGED */}
-      <section className="mb-8 p-6 bg-white rounded-lg shadow">
-        <h2 className="text-2xl font-semibold mb-4">News Sentiment</h2>
-        <ul className="list-disc pl-5">
-          {news.length
-            ? news.map((n, i) => (
-                <li key={i}>
-                  <span className="font-medium">{n.sentiment.toUpperCase()}</span>: {n.headline}
-                </li>
-              ))
-            : <p className="text-gray-500">Loading news…</p>
-          }
-        </ul>
-      </section>
+          <div className="flex items-center gap-2">
+            {prediction ? (
+              <Badge tone={toneFromDirection(dir) as any}>
+                {dir === "UP" ? "Bullish" : dir === "DOWN" ? "Bearish" : "Mixed"}
+              </Badge>
+            ) : (
+              <Badge tone="neutral">{loading ? "Loading…" : "No data"}</Badge>
+            )}
+          </div>
+        </div>
+      </header>
 
-      {/* 3. Reddit Sentiment - UNCHANGED */}
-      <section className="mb-8 p-6 bg-white rounded-lg shadow">
-        <h2 className="text-2xl font-semibold mb-4">Reddit Sentiment</h2>
-        <ul className="list-disc pl-5">
-          {reddit.length
-            ? reddit.map((r, i) => (
-                <li key={i}>
-                  <span className="font-medium">{r.sentiment.toUpperCase()}</span>: {r.post}
-                </li>
-              ))
-            : <p className="text-gray-500">Loading Reddit posts…</p>
-          }
-        </ul>
-      </section>
+      <main className="mx-auto max-w-6xl px-6 py-10 space-y-10">
+        {/* Top stats */}
+        <section className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+          <StatCard
+            title="Current Price"
+            value={prediction ? money(prediction.current_price) : "—"}
+            subvalue="Latest available price"
+          />
+          <StatCard
+            title="Predicted Price"
+            value={prediction ? money(prediction.predicted_price) : "—"}
+            subvalue="Model estimate (next step)"
+            badge={
+              prediction
+                ? { text: dir === "UP" ? "UP" : dir === "DOWN" ? "DOWN" : "—", tone: toneFromDirection(dir) as any }
+                : undefined
+            }
+          />
+          <StatCard
+            title="Predicted Change"
+            value={prediction ? pct(prediction.predicted_change_pct) : "—"}
+            subvalue={prediction ? `Direction: ${dir}` : "—"}
+            badge={
+              prediction
+                ? { text: prediction.system_confidence?.toUpperCase?.() ?? "—", tone: "neutral" }
+                : undefined
+            }
+          />
+          <StatCard
+            title="Confidence"
+            value={prediction ? `${(prediction.confidence * 100).toFixed(1)}%` : "—"}
+            subvalue={
+              prediction
+                ? `Models: ${prediction.model_info.direction_model} + ${prediction.model_info.magnitude_model}`
+                : "—"
+            }
+          />
+        </section>
 
-      {/* 4. Financials & Direction - UNCHANGED */}
-      <section className="p-6 bg-white rounded-lg shadow">
-        <h2 className="text-2xl font-semibold mb-4">Financials & Prediction</h2>
-        {financials
-          ? (
-            <>
-              <pre className="bg-gray-100 p-4 rounded mb-4">
-                {JSON.stringify(financials, null, 2)}
-              </pre>
-              {direction && confidence !== null && (
-                <p className="text-lg">
-                  Model predicts <strong>{direction}</strong> with{" "}
-                  <strong>{(confidence * 100).toFixed(1)}%</strong> confidence.
-                </p>
-              )}
-            </>
-          )
-          : <p className="text-gray-500">Loading financials…</p>
-        }
-      </section>
+        {/* Confidence bar + note */}
+        <section className="rounded-2xl border border-border bg-card p-6">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="text-lg font-semibold">Model confidence</div>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Confidence reflects how strongly the model agrees with the signal mix (historical price, sentiment, fundamentals).
+              </p>
+            </div>
+            {prediction ? (
+              <Badge tone={toneFromDirection(dir) as any}>
+                {dir === "UP" ? "↑ Upward bias" : dir === "DOWN" ? "↓ Downward bias" : "—"}
+              </Badge>
+            ) : null}
+          </div>
+
+          <div className="mt-4 h-3 w-full rounded-full bg-black/5 overflow-hidden">
+            <div
+              className="h-full bg-black"
+              style={{ width: `${prediction ? Math.round(prediction.confidence * 100) : 0}%` }}
+            />
+          </div>
+
+          <div className="mt-3 text-sm text-muted-foreground">
+            {prediction ? (
+              <>
+                System confidence:{" "}
+                <span className="font-medium text-foreground">
+                  {prediction.system_confidence?.toUpperCase?.() ?? "—"}
+                </span>{" "}
+                • Predicted move:{" "}
+                <span className="font-medium text-foreground">{pct(changePct)}</span>
+              </>
+            ) : (
+              loading ? "Generating prediction…" : "No prediction yet."
+            )}
+          </div>
+        </section>
+
+        {/* Sentiment overview */}
+        <section className="grid gap-4 lg:grid-cols-2">
+          <div className="rounded-2xl border border-border bg-card p-6">
+            <div className="flex items-center justify-between">
+              <div className="text-lg font-semibold">News sentiment</div>
+              <Badge tone="neutral">{sentimentSummary.news.total} items</Badge>
+            </div>
+            <div className="mt-4 space-y-3">
+              <SentimentBar label="Positive" value={sentimentSummary.news.positive} total={sentimentSummary.news.total} />
+              <SentimentBar label="Neutral" value={sentimentSummary.news.neutral} total={sentimentSummary.news.total} />
+              <SentimentBar label="Negative" value={sentimentSummary.news.negative} total={sentimentSummary.news.total} />
+            </div>
+
+            <div className="mt-6">
+              <div className="text-sm font-medium">Top headlines</div>
+              <ul className="mt-2 space-y-2">
+                {(news ?? []).slice(0, 6).map((n, i) => {
+                  const s = normalizeSentiment(n.sentiment);
+                  return (
+                    <li key={i} className="rounded-xl border border-border bg-white p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="text-sm leading-snug">{n.headline}</div>
+                        <Badge
+                          tone={s === "positive" ? "good" : s === "negative" ? "bad" : "neutral"}
+                        >
+                          {s}
+                        </Badge>
+                      </div>
+                    </li>
+                  );
+                })}
+                {!news?.length && (
+                  <li className="text-sm text-muted-foreground">
+                    {loading ? "Loading news…" : "No news items returned."}
+                  </li>
+                )}
+              </ul>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-border bg-card p-6">
+            <div className="flex items-center justify-between">
+              <div className="text-lg font-semibold">Reddit sentiment</div>
+              <Badge tone="neutral">{sentimentSummary.reddit.total} posts</Badge>
+            </div>
+            <div className="mt-4 space-y-3">
+              <SentimentBar label="Positive" value={sentimentSummary.reddit.positive} total={sentimentSummary.reddit.total} />
+              <SentimentBar label="Neutral" value={sentimentSummary.reddit.neutral} total={sentimentSummary.reddit.total} />
+              <SentimentBar label="Negative" value={sentimentSummary.reddit.negative} total={sentimentSummary.reddit.total} />
+            </div>
+
+            <div className="mt-6">
+              <div className="text-sm font-medium">Sample posts</div>
+              <ul className="mt-2 space-y-2">
+                {(reddit ?? []).slice(0, 6).map((r, i) => {
+                  const s = normalizeSentiment(r.sentiment);
+                  return (
+                    <li key={i} className="rounded-xl border border-border bg-white p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="text-sm leading-snug">{r.post}</div>
+                        <Badge
+                          tone={s === "positive" ? "good" : s === "negative" ? "bad" : "neutral"}
+                        >
+                          {s}
+                        </Badge>
+                      </div>
+                    </li>
+                  );
+                })}
+                {!reddit?.length && (
+                  <li className="text-sm text-muted-foreground">
+                    {loading ? "Loading posts…" : "No Reddit posts returned."}
+                  </li>
+                )}
+              </ul>
+            </div>
+          </div>
+        </section>
+
+        {/* Financials */}
+        <section className="rounded-2xl border border-border bg-card p-6">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="text-lg font-semibold">Key financials</div>
+              <p className="mt-1 text-sm text-muted-foreground">
+                We only show the most useful metrics first. Raw data is available below.
+              </p>
+            </div>
+
+            {direction2 && confidence2 !== null ? (
+              <Badge tone={toneFromDirection(direction2) as any}>
+                Financial model: {direction2} ({(confidence2 * 100).toFixed(1)}%)
+              </Badge>
+            ) : null}
+          </div>
+
+          <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {keyFinancials.map((kv) => (
+              <div key={kv.label} className="rounded-xl border border-border bg-white p-4">
+                <div className="text-sm text-muted-foreground">{kv.label}</div>
+                <div className="mt-1 text-base font-semibold break-words">
+                  {typeof kv.value === "number"
+                    ? kv.label.toLowerCase().includes("margin") || kv.label === "ROE"
+                      ? `${(kv.value * 100).toFixed(2)}%`
+                      : kv.value.toLocaleString()
+                    : String(kv.value)}
+                </div>
+              </div>
+            ))}
+
+            {!financials && (
+              <div className="text-sm text-muted-foreground">
+                {loading ? "Loading financials…" : "No financials returned."}
+              </div>
+            )}
+          </div>
+
+          {/* Raw + advanced */}
+          <details className="mt-6 rounded-xl border border-border bg-white p-4">
+            <summary className="cursor-pointer select-none font-medium">
+              Advanced: raw financial JSON
+            </summary>
+            <pre className="mt-3 overflow-auto rounded-lg bg-black/5 p-4 text-xs">
+              {financials ? JSON.stringify(financials, null, 2) : "—"}
+            </pre>
+          </details>
+        </section>
+
+        <section className="rounded-2xl border border-border bg-card p-6">
+          <div className="font-medium">Reminder</div>
+          <p className="mt-2 text-sm text-muted-foreground">
+            This dashboard is not financial advice. Use it to summarize signals faster—not to replace research.
+          </p>
+        </section>
+      </main>
     </div>
   );
 }

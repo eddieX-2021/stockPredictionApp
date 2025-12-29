@@ -1,26 +1,47 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --background: 255 255 255;
+  --foreground: 17 17 17;
+  --muted: 115 115 115;
+  --border: 230 230 230;
+  --card: 255 255 255;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --background: 10 10 10;
+    --foreground: 237 237 237;
+    --muted: 170 170 170;
+    --border: 40 40 40;
+    --card: 18 18 18;
   }
 }
 
+html, body {
+  height: 100%;
+}
+
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: rgb(var(--background));
+  color: rgb(var(--foreground));
+}
+
+/* Tailwind helper tokens (simple, clean design system) */
+.bg-bg { background-color: rgb(var(--background)); }
+.text-foreground { color: rgb(var(--foreground)); }
+.text-muted-foreground { color: rgb(var(--muted)); }
+.border-border { border-color: rgb(var(--border)); }
+.bg-card { background-color: rgb(var(--card)); }
+
+/* Make autosuggest list match the new style */
+.react-autosuggest__container {
+  position: relative;
+}
+
+.line-clamp-1 {
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
