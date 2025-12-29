@@ -1,4 +1,4 @@
-# stockPredictionApp
+# stockPredictionApp(1.2.0)
 
 
 A full-stack, machine learning–powered web application that forecasts stock price movements by combining historical data, financial sentiment analysis, and news headlines. Built with a Python/FastAPI backend and a Next.js frontend, the app delivers real-time predictions and sentiment insights to help users make data-driven investment decisions.
@@ -115,11 +115,9 @@ Our Stock Prediction App combines financial data, news sentiment, and cutting-ed
 
 ## Future Improvements
 
-- **UI Enhancements:** Theme support, chart filters, animations.  
 - **Custom Timeframes:** User-selectable 1D, 1W, 1M, 1Y ranges.  
-- **Ensemble Signals:** Unified score combining price, news, and financial models.  
 - **Real-Time Streaming:** WebSocket updates for live data & sentiment.  
-- **Backtesting Module:** Historical performance evaluation & metrics.
+- **Community Trending:** Show what stocks are trending in community by using NLP on reddit posts or other posts.
 
 ---
 
@@ -129,5 +127,6 @@ Our Stock Prediction App combines financial data, news sentiment, and cutting-ed
 - [US Stocks Fundamentals (Kaggle)](https://www.kaggle.com/datasets/usfundamentals/us-stocks-fundamentals)
 
 ---
+
 
 
