@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import Autosuggest from "react-autosuggest";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCombobox, type UseComboboxStateChange } from "downshift";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import { useDebounce } from "use-debounce";
@@ -11,7 +11,7 @@ interface Stock {
   name: string;
 }
 
-const POPULAR_SYMBOLS = [
+const POPULAR_SYMBOLS: ReadonlyArray<string> = [
   "AAPL","MSFT","GOOGL","GOOG","AMZN","TSLA","META","NVDA","NFLX","INTC",
   "AMD","CRM","ORCL","IBM","ADBE","CSCO",
   "JPM","BAC","WFC","C","GS","MS","AXP",
@@ -24,49 +24,66 @@ const POPULAR_SYMBOLS = [
   "SPY","QQQ","DIA","VTI","VOO","ARKK","XLK","XLF","XLE","IWM",
 ];
 
-function classNames(...xs: Array<string | false | undefined | null>) {
-  return xs.filter(Boolean).join(" ");
+function safeUpper(s: string) {
+  return s.trim().toUpperCase();
 }
 
 export default function Home() {
-  const [query, setQuery] = useState("");
-  const [suggestions, setSuggestions] = useState<Stock[]>([]);
+  const [query, setQuery] = useState<string>("");
   const [stockData, setStockData] = useState<Stock[]>([]);
   const [debouncedQuery] = useDebounce(query, 250);
   const router = useRouter();
 
   useEffect(() => {
-    const fetchStockData = async () => {
+    let cancelled = false;
+
+    async function fetchStockData() {
       try {
         const res = await fetch(
           `/api/finnhub-stocks?query=${encodeURIComponent(debouncedQuery)}`
         );
-        const data = await res.json();
-        setStockData(Array.isArray(data) ? data : []);
+
+        const data: unknown = await res.json();
+
+        if (cancelled) return;
+
+        // runtime guard (no `any`)
+        const next: Stock[] = Array.isArray(data)
+          ? data.filter((x): x is Stock => {
+              if (typeof x !== "object" || x === null) return false;
+              const rec = x as Record<string, unknown>;
+              return typeof rec.symbol === "string" && typeof rec.name === "string";
+            })
+          : [];
+
+        setStockData(next);
       } catch {
-        setStockData([]);
+        if (!cancelled) setStockData([]);
       }
-    };
+    }
 
     if (debouncedQuery.length > 1) fetchStockData();
     else setStockData([]);
+
+    return () => {
+      cancelled = true;
+    };
   }, [debouncedQuery]);
 
-  const getSuggestions = (value: string) => {
-    const inputValue = value.trim().toLowerCase();
+  const suggestions = useMemo<Stock[]>(() => {
+    const inputValue = query.trim().toLowerCase();
     if (inputValue.length === 0) return [];
 
-    const filtered = stockData.reduce(
-      (acc, s) => {
-        if (s.symbol.toLowerCase().startsWith(inputValue)) acc.symbol.push(s);
-        else if (s.name.toLowerCase().startsWith(inputValue)) acc.name.push(s);
-        return acc;
-      },
-      { symbol: [] as Stock[], name: [] as Stock[] }
-    );
+    const symbolMatches: Stock[] = [];
+    const nameMatches: Stock[] = [];
+
+    for (const s of stockData) {
+      if (s.symbol.toLowerCase().startsWith(inputValue)) symbolMatches.push(s);
+      else if (s.name.toLowerCase().startsWith(inputValue)) nameMatches.push(s);
+    }
 
     const sortStocks = (xs: Stock[]) =>
-      xs.sort((a, b) => {
+      [...xs].sort((a, b) => {
         const ap = POPULAR_SYMBOLS.includes(a.symbol);
         const bp = POPULAR_SYMBOLS.includes(b.symbol);
         if (ap && !bp) return -1;
@@ -74,63 +91,67 @@ export default function Home() {
         return a.symbol.localeCompare(b.symbol);
       });
 
-    return [...sortStocks(filtered.symbol), ...sortStocks(filtered.name)].slice(0, 10);
-  };
-
-  useEffect(() => {
-    setSuggestions(getSuggestions(query));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return [...sortStocks(symbolMatches), ...sortStocks(nameMatches)].slice(0, 10);
   }, [query, stockData]);
 
-  const onSuggestionsFetchRequested = ({ value }: { value: string }) => {
-    setSuggestions(getSuggestions(value));
-  };
-
-  const onSuggestionsClearRequested = () => setSuggestions([]);
-
-  const onChange = (_: React.FormEvent<HTMLElement>, { newValue }: { newValue: string }) => {
-    setQuery(newValue);
-  };
-
-  const onSuggestionSelected = (_: React.FormEvent<HTMLElement>, { suggestion }: { suggestion: Stock }) => {
-    setQuery(suggestion.symbol);
-    router.push(`/${suggestion.symbol}`);
-  };
-
-  const onKeyPress = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "Enter" && query) {
-      const matched = stockData.find((s) => s.symbol.toUpperCase() === query.toUpperCase());
-      if (matched) router.push(`/${matched.symbol}`);
-    }
-  };
-
-  const renderSuggestion = (s: Stock) => (
-    <div className="px-3 py-2.5 hover:bg-black/5 cursor-pointer">
-      <div className="flex items-center justify-between">
-        <span className="font-semibold tracking-wide">{s.symbol}</span>
-        <span className="text-xs text-muted-foreground">Ticker</span>
-      </div>
-      <div className="text-sm text-muted-foreground line-clamp-1">{s.name}</div>
-    </div>
+  const navigateToSymbol = useCallback(
+    (symbol: string) => {
+      const s = safeUpper(symbol);
+      if (!s) return;
+      router.push(`/${s}`);
+    },
+    [router]
   );
 
-  const inputProps = useMemo(
-    () => ({
-      placeholder: "Search a ticker (AAPL) or company name (Apple)…",
-      value: query,
-      onChange,
-      onKeyPress,
-      className:
-        "w-full rounded-xl border border-white/15 bg-white/10 px-4 py-3 text-base text-white placeholder:text-white/60 outline-none backdrop-blur focus:ring-2 focus:ring-white/40",
-    }),
-    [query]
+  const onInputValueChange = useCallback(
+    (changes: UseComboboxStateChange<Stock>) => {
+      setQuery(changes.inputValue ?? "");
+    },
+    []
+  );
+
+  const onSelectedItemChange = useCallback(
+    (changes: UseComboboxStateChange<Stock>) => {
+      if (changes.selectedItem) {
+        navigateToSymbol(changes.selectedItem.symbol);
+      }
+    },
+    [navigateToSymbol]
+  );
+
+  const {
+    isOpen,
+    getMenuProps,
+    getInputProps,
+    highlightedIndex,
+    getItemProps,
+  } = useCombobox<Stock>({
+    items: suggestions,
+    itemToString: (item) => (item ? item.symbol : ""),
+    onInputValueChange,
+    onSelectedItemChange,
+  });
+
+  const handleKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLInputElement>) => {
+      if (event.key !== "Enter") return;
+
+      const q = safeUpper(query);
+      if (!q) return;
+
+      // If user typed AAPL and it exists in fetched items, normalize to that symbol
+      const matched = stockData.find((s) => safeUpper(s.symbol) === q);
+      if (matched) navigateToSymbol(matched.symbol);
+      else navigateToSymbol(q); // allow direct navigation even if not in suggestions
+    },
+    [query, stockData, navigateToSymbol]
   );
 
   return (
     <main className="min-h-screen">
       {/* HERO */}
       <section className="relative overflow-hidden">
-        {/* Background image (replace /public/hero.jpg) */}
+        {/* Background image */}
         <div className="absolute inset-0 -z-10">
           <Image
             src="/money.jpg"
@@ -163,25 +184,50 @@ export default function Home() {
             {/* Search */}
             <div className="mt-8">
               <div className="rounded-2xl border border-white/15 bg-white/10 p-4 backdrop-blur">
-                <div className="text-sm font-medium text-white/80 mb-2">
+                <div className="mb-2 text-sm font-medium text-white/80">
                   Search a stock to generate the dashboard
                 </div>
 
-                <Autosuggest
-                  suggestions={suggestions}
-                  onSuggestionsFetchRequested={onSuggestionsFetchRequested}
-                  onSuggestionsClearRequested={onSuggestionsClearRequested}
-                  getSuggestionValue={(s) => s.symbol}
-                  renderSuggestion={renderSuggestion}
-                  inputProps={inputProps}
-                  onSuggestionSelected={onSuggestionSelected}
-                  theme={{
-                    container: "relative",
-                    suggestionsContainer:
-                      "absolute z-10 mt-2 w-full overflow-hidden rounded-xl border border-white/10 bg-white shadow-2xl",
-                    suggestionHighlighted: "bg-black/5",
-                  }}
-                />
+                <div className="relative">
+                  <input
+                    {...getInputProps({
+                      onKeyDown: handleKeyDown,
+                      placeholder: "Search a ticker (AAPL) or company name (Apple)…",
+                      className:
+                        "w-full rounded-xl border border-white/15 bg-white/10 px-4 py-3 text-base text-white placeholder:text-white/60 outline-none backdrop-blur focus:ring-2 focus:ring-white/40",
+                    })}
+                  />
+
+                  <ul
+                    {...getMenuProps()}
+                    className={`absolute z-10 mt-2 w-full overflow-hidden rounded-xl border border-white/10 bg-white shadow-2xl ${
+                      isOpen && suggestions.length > 0 ? "" : "hidden"
+                    }`}
+                  >
+                    {isOpen &&
+                      suggestions.map((item, index) => (
+                        <li
+                          key={`${item.symbol}-${index}`}
+                          {...getItemProps({ item, index })}
+                          className={`cursor-pointer px-3 py-2.5 ${
+                            highlightedIndex === index ? "bg-black/5" : ""
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="font-semibold tracking-wide">
+                              {item.symbol}
+                            </span>
+                            <span className="text-xs text-muted-foreground">
+                              Ticker
+                            </span>
+                          </div>
+                          <div className="line-clamp-1 text-sm text-muted-foreground">
+                            {item.name}
+                          </div>
+                        </li>
+                      ))}
+                  </ul>
+                </div>
 
                 <div className="mt-3 text-xs text-white/70">
                   Tip: try <span className="font-semibold">AAPL</span>,{" "}
@@ -216,8 +262,8 @@ export default function Home() {
 
           {/* Scroll hint */}
           <div className="mt-16 flex items-center gap-2 text-white/70">
-            <div className="h-10 w-6 rounded-full border border-white/20 flex items-start justify-center p-1">
-              <div className="h-2 w-2 rounded-full bg-white/70 animate-bounce" />
+            <div className="flex h-10 w-6 items-start justify-center rounded-full border border-white/20 p-1">
+              <div className="h-2 w-2 animate-bounce rounded-full bg-white/70" />
             </div>
             <span className="text-sm">Scroll to learn how it works</span>
           </div>
@@ -231,7 +277,7 @@ export default function Home() {
             <h2 className="text-3xl font-semibold tracking-tight">
               How the prediction is made
             </h2>
-            <p className="mt-3 text-muted-foreground leading-relaxed">
+            <p className="mt-3 leading-relaxed text-muted-foreground">
               We combine three signal groups:
               <span className="font-medium text-foreground"> historical price behavior</span>{" "}
               (Yahoo), <span className="font-medium text-foreground">market narrative</span>{" "}
@@ -243,7 +289,7 @@ export default function Home() {
 
             <ol className="mt-6 space-y-3">
               <li className="flex gap-3">
-                <span className="mt-0.5 inline-flex h-6 w-6 items-center justify-center rounded-full bg-black text-white text-xs">
+                <span className="mt-0.5 inline-flex h-6 w-6 items-center justify-center rounded-full bg-black text-xs text-white">
                   1
                 </span>
                 <div>
@@ -254,7 +300,7 @@ export default function Home() {
                 </div>
               </li>
               <li className="flex gap-3">
-                <span className="mt-0.5 inline-flex h-6 w-6 items-center justify-center rounded-full bg-black text-white text-xs">
+                <span className="mt-0.5 inline-flex h-6 w-6 items-center justify-center rounded-full bg-black text-xs text-white">
                   2
                 </span>
                 <div>
@@ -265,13 +311,13 @@ export default function Home() {
                 </div>
               </li>
               <li className="flex gap-3">
-                <span className="mt-0.5 inline-flex h-6 w-6 items-center justify-center rounded-full bg-black text-white text-xs">
+                <span className="mt-0.5 inline-flex h-6 w-6 items-center justify-center rounded-full bg-black text-xs text-white">
                   3
                 </span>
                 <div>
                   <div className="font-medium">Blend with fundamentals</div>
                   <div className="text-sm text-muted-foreground">
-                    Financials help avoid “hype-only” predictions.
+                    Financials help avoid &quot;hype-only&quot; predictions.
                   </div>
                 </div>
               </li>
@@ -279,14 +325,9 @@ export default function Home() {
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2">
-            <div className="rounded-2xl border border-border bg-card overflow-hidden">
+            <div className="overflow-hidden rounded-2xl border border-border bg-card">
               <div className="relative aspect-[4/3]">
-                <Image
-                  src="/eg1.jpg"
-                  alt="Placeholder 1"
-                  fill
-                  className="object-cover"
-                />
+                <Image src="/eg1.jpg" alt="Placeholder 1" fill className="object-cover" />
               </div>
               <div className="p-4">
                 <div className="font-medium">Dashboard snapshot</div>
@@ -296,14 +337,9 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="rounded-2xl border border-border bg-card overflow-hidden">
+            <div className="overflow-hidden rounded-2xl border border-border bg-card">
               <div className="relative aspect-[4/3]">
-                <Image
-                  src="/eg2.jpg"
-                  alt="Placeholder 2"
-                  fill
-                  className="object-cover"
-                />
+                <Image src="/eg2.jpg" alt="Placeholder 2" fill className="object-cover" />
               </div>
               <div className="p-4">
                 <div className="font-medium">Signals overview</div>
@@ -317,7 +353,7 @@ export default function Home() {
 
         <div className="mt-12 rounded-2xl border border-border bg-card p-6">
           <div className="font-medium">Disclaimer</div>
-          <p className="mt-2 text-sm text-muted-foreground leading-relaxed">
+          <p className="mt-2 leading-relaxed text-sm text-muted-foreground">
             Predictions can be wrong. This app is for educational and informational purposes,
             not financial advice.
           </p>
