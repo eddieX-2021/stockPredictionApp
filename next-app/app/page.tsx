@@ -324,31 +324,28 @@ export default function Home() {
             </ol>
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="overflow-hidden rounded-2xl border border-border bg-card">
-              <div className="relative aspect-[4/3]">
-                <Image src="/eg1.jpg" alt="Placeholder 1" fill className="object-cover" />
-              </div>
-              <div className="p-4">
-                <div className="font-medium">Dashboard snapshot</div>
-                <div className="text-sm text-muted-foreground">
-                  Replace this with your own screenshot later.
-                </div>
-              </div>
+          <div className="overflow-hidden rounded-2xl border border-border bg-card">
+            {/* Image */}
+            <div className="relative aspect-[16/10]">
+              <Image
+                src="/eg.png"
+                alt="Dashboard snapshot"
+                fill
+                className="object-contain bg-white"
+                priority
+              />
             </div>
 
-            <div className="overflow-hidden rounded-2xl border border-border bg-card">
-              <div className="relative aspect-[4/3]">
-                <Image src="/eg2.jpg" alt="Placeholder 2" fill className="object-cover" />
-              </div>
-              <div className="p-4">
-                <div className="font-medium">Signals overview</div>
-                <div className="text-sm text-muted-foreground">
-                  Another placeholder for your design / chart.
-                </div>
-              </div>
+            {/* Caption */}
+            <div className="p-5">
+              <div className="text-lg font-semibold">Dashboard snapshot</div>
+              <p className="mt-1 text-sm text-muted-foreground leading-relaxed">
+                Example view of the prediction dashboard, highlighting key metrics,
+                confidence, and sentiment breakdown.
+              </p>
             </div>
           </div>
+
         </div>
 
         <div className="mt-12 rounded-2xl border border-border bg-card p-6">
