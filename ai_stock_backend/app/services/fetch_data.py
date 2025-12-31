@@ -1,47 +1,73 @@
 import numpy as np
 import pandas as pd
 import yfinance as yf
+from app.services.cache import TTLCache
+_market_cache = TTLCache(ttl_seconds=24 * 3600)
 
 def fetch_raw_stock_data(ticker, start_date, end_date):
     try:
-        stock_data = yf.download(ticker, start=start_date, end=end_date, progress=False, auto_adjust=True)
-        
-        # Flatten MultiIndex columns if present
+        stock_data = yf.download(
+            ticker,
+            start=start_date,
+            end=end_date,
+            progress=False,
+            auto_adjust=True
+        )
+
         if isinstance(stock_data.columns, pd.MultiIndex):
             stock_data.columns = stock_data.columns.get_level_values(0)
-        
-        if stock_data.empty:
-            raise ValueError(f"No data retrieved for ticker {ticker} from {start_date} to {end_date}")
-        if len(stock_data) < 50:
-            raise ValueError(f"Insufficient data: only {len(stock_data)} rows retrieved. Need at least 50 rows.")
+
+        if stock_data.empty or len(stock_data) < 50:
+            raise ValueError("Insufficient stock data")
+
         return stock_data
+
     except Exception as e:
-        print(f"Error fetching raw data: {e}")
+        print(f"Error fetching raw stock data: {e}")
         return None
 
 
 def fetch_market_context(start_date, end_date):
     """
-    Fetch only the most critical market indicators.
-    Limited to 3 sources to avoid overfitting and multicollinearity.
+    Fetch SPY and VIX once per day (cached).
     """
+    cache_key = f"{start_date}_{end_date}"
+    cached = _market_cache.get(cache_key)
+    if cached:
+        return cached
+
     try:
-        # S&P 500 (market benchmark) - ESSENTIAL
-        spy = yf.download("SPY", start=start_date, end=end_date, progress=False, auto_adjust=True)
+        spy = yf.download(
+            "SPY",
+            start=start_date,
+            end=end_date,
+            progress=False,
+            auto_adjust=True
+        )
+
+        vix = yf.download(
+            "^VIX",
+            start=start_date,
+            end=end_date,
+            progress=False,
+            auto_adjust=True
+        )
+
         if isinstance(spy.columns, pd.MultiIndex):
             spy.columns = spy.columns.get_level_values(0)
-        
-        # VIX (fear gauge) - ESSENTIAL for volatility context
-        vix = yf.download("^VIX", start=start_date, end=end_date, progress=False, auto_adjust=True)
         if isinstance(vix.columns, pd.MultiIndex):
             vix.columns = vix.columns.get_level_values(0)
-        
-        return {
-            'SPY': spy,
-            'VIX': vix
+
+        result = {
+            "SPY": spy,
+            "VIX": vix
         }
+
+        _market_cache.set(cache_key, result)
+        return result
+
     except Exception as e:
-        print(f"Warning: Could not fetch market context: {e}")
+        print(f"Warning: market context fetch failed: {e}")
         return None
 
 
