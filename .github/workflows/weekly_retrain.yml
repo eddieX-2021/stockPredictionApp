@@ -1,0 +1,48 @@
+name: Weekly Model Retrain
+
+on:
+  # Run every Sunday at 2 AM UTC (9 PM EST Saturday / 10 PM EDT Saturday)
+  schedule:
+    - cron: '0 2 * * 0'
+  
+  # Allow manual trigger from GitHub Actions tab
+  workflow_dispatch:
+
+jobs:
+  retrain-models:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install requests
+      
+      - name: Clear expired cache
+        run: |
+          echo "Clearing expired cache entries..."
+          curl -X POST ${{ secrets.API_URL }}/cache/clear-expired || echo "Failed to clear cache (API might be down)"
+      
+      - name: Pre-train popular tickers
+        run: |
+          echo "Starting pre-training of popular tickers..."
+          python scripts/pre_train_popular_tickers.py --api-url ${{ secrets.API_URL }}
+        continue-on-error: true
+      
+      - name: Get cache statistics
+        run: |
+          echo "Fetching final cache statistics..."
+          curl ${{ secrets.API_URL }}/cache/stats | python -m json.tool || echo "Failed to fetch stats"
+      
+      - name: Send notification on failure
+        if: failure()
+        run: |
+          echo "⚠️ Weekly retrain failed! Check the logs."
+          # Optional: Add Slack/Discord webhook notification here
