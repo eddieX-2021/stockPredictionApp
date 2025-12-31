@@ -1,0 +1,9 @@
+# Model cache (too large for git)
+model_cache/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
