@@ -36,7 +36,9 @@ jobs:
           API_URL: ${{ secrets.API_URL }}
         run: |
           echo "Starting pre-training of popular tickers..."
-          python scripts/pre_train_popular_tickers.py
+          echo "Using API_URL=$API_URL"
+          python scripts/pre_train_popular_tickers.py --api-url "$API_URL"
+
         continue-on-error: true
       
       - name: Get cache statistics
