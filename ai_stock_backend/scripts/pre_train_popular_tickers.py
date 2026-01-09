@@ -86,7 +86,7 @@ def pre_train_tickers(api_url: str, tickers: list):
             response = requests.get(
                 f"{api_url}/predict",
                 params={"stock": ticker},
-                timeout=120  # 2 minute timeout per ticker
+                timeout=600  # 2 minute timeout per ticker
             )
             
             elapsed = time.time() - start_time
