@@ -20,11 +20,11 @@ POPULAR_TICKERS = [
     # Mega Caps (Tech Giants)
     'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA',
     
-    # Major Indices ETFs
-    'SPY', 'VOO',
+    # # Major Indices ETFs
+    # 'SPY', 'VOO',
     
-    # Popular Tech Stocks
-    'AMD', 'INTC', 'NFLX', 
+    # # Popular Tech Stocks
+    # 'AMD', 'INTC', 'NFLX', 
     
     # 'ADBE', 'CRM', 'ORCL', 'NBIS', 'RDDT',
 
