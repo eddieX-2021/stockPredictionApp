@@ -21,37 +21,39 @@ POPULAR_TICKERS = [
     'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA',
     
     # Major Indices ETFs
-    'SPY', 'QQQ', 'DIA', 'IWM', 'VOO',
+    'SPY', 'VOO',
     
     # Popular Tech Stocks
-    'AMD', 'INTC', 'NFLX', 'ADBE', 'CRM', 'ORCL', 'NBIS', 'RDDT',
+    'AMD', 'INTC', 'NFLX', 
+    
+    # 'ADBE', 'CRM', 'ORCL', 'NBIS', 'RDDT',
 
-    # Space
-    'ASTS', 'RKLB', 'LUNR',
+    # # Space
+    # 'ASTS', 'RKLB', 'LUNR',
 
-    # Database
-    'PLTR', 'MU',
+    # # Database
+    # 'PLTR', 'MU',
     
-    # Finance
-    'JPM', 'BAC', 'GS', 'V', 'MA',
+    # # Finance
+    # 'JPM', 'BAC', 'GS', 'V', 'MA',
     
-    # Consumer
-    'DIS', 'NKE', 'SBUX', 'MCD', 'KO', 'PEP',
+    # # Consumer
+    # 'DIS', 'NKE', 'SBUX', 'MCD', 'KO', 'PEP',
     
-    # Healthcare
-    'UNH', 'JNJ', 'PFE', 'ABBV',
+    # # Healthcare
+    # 'UNH', 'JNJ', 'PFE', 'ABBV',
     
-    # Energy
-    'XOM', 'CVX',
+    # # Energy
+    # 'XOM', 'CVX',
     
-    # Industrial/Aerospace
-    'BA', 'CAT',
+    # # Industrial/Aerospace
+    # 'BA', 'CAT',
     
-    # Communication
-    'T', 'VZ',
+    # # Communication
+    # 'T', 'VZ',
     
-    # Crypto-related
-    'COIN', 'MSTR'
+    # # Crypto-related
+    # 'COIN', 'MSTR'
 ]
 
 
