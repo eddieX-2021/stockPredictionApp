@@ -31,9 +31,14 @@ jobs:
           curl -X POST ${{ secrets.API_URL }}/cache/clear-expired || echo "Failed to clear cache (API might be down)"
       
       - name: Pre-train popular tickers
+        working-directory: ai_stock_backend
+        env:
+          API_URL: ${{ secrets.API_URL }}
         run: |
           echo "Starting pre-training of popular tickers..."
-          python scripts/pre_train_popular_tickers.py --api-url ${{ secrets.API_URL }}
+          echo "Using API_URL=$API_URL"
+          python scripts/pre_train_popular_tickers.py --api-url "$API_URL"
+
         continue-on-error: true
       
       - name: Get cache statistics
