@@ -31,13 +31,10 @@ jobs:
           cache: 'pip' # Caches dependencies to speed up future runs
 
       - name: Install dependencies
-        # We MUST install all ML libraries (pandas, sklearn, catboost, etc.)
-        # Make sure you have a requirements.txt in ai_stock_backend/
         run: |
           pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          # Fallback: manually install key libs if requirements.txt is missing/incomplete
-          pip install pandas numpy scikit-learn xgboost catboost joblib yfinance fastapirequests
+          # Force install from the requirements file
+          pip install -r requirements.txt
 
       - name: Run Serverless Training Script
         # We run this as a module (-m) to ensure imports work correctly
