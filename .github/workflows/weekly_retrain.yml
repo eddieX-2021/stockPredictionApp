@@ -28,35 +28,35 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip' # Caches dependencies to speed up future runs
+          cache: 'pip'
 
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          # Force install from the requirements file
           pip install -r requirements.txt
 
       - name: Run Serverless Training Script
-        # We run this as a module (-m) to ensure imports work correctly
         env:
           PYTHONPATH: . 
         run: |
           echo "Starting serverless training..."
+          # This script will create/update files in ai_stock_backend/model_cache/
           python -m scripts.pre_train_popular_tickers
 
       - name: Verify Files
         run: |
-          echo "Checking for saved models..."
-          ls -R app/mlm_predict/saved_models/ || echo "No models directory found!"
+          echo "Checking for saved models in model_cache..."
+          # List the model_cache directory to verify files exist
+          ls -R model_cache/ || echo "No model_cache directory found!"
 
       - name: Commit and Push
         run: |
           git config --global user.name 'GitHub Action'
           git config --global user.email 'action@github.com'
           
-          # Add the saved_models directory
-          # Since we are in 'ai_stock_backend' working dir, this path is relative to it
-          git add app/mlm_predict/saved_models/
+          # FIX: We now add the 'model_cache' folder
+          # Because we are in 'ai_stock_backend', this points to 'ai_stock_backend/model_cache'
+          git add model_cache/
           
           # Commit if there are changes
           if git diff --staged --quiet; then
