@@ -16,6 +16,7 @@ from sklearn.utils.class_weight import compute_class_weight
 from joblib import Parallel, delayed
 import os
 from app.services.fetch_data import fetch_raw_stock_data, generate_features
+from app.mlm_predict.model_cache import ModelCache
 
 # Optional: LightGBM
 try:
@@ -26,6 +27,9 @@ except ImportError:
 
 # Models that benefit from scaling
 MODELS_NEEDING_SCALING = {"Logistic Regression", "Ridge", "MLP"}
+
+# Initialize global model cache (survives across function calls)
+_model_cache = ModelCache(cache_dir="model_cache", cache_duration_days=7)
 
 
 def predict_ensemble_direction(X, ensemble_info):
@@ -248,10 +252,10 @@ def train_magnitude_model(name, model, X_train, y_train, X_val, y_val, X_test, y
         return name, None, None, None
 
 
-def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=False):
+def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=False, use_cache=True):
     """
     Train dual prediction system: direction (up/down) and magnitude (% change).
-    Returns comprehensive results for both models plus prediction function.
+    Automatically handles caching - checks cache first, trains if needed, saves result.
     
     Args:
         ticker: Stock ticker symbol
@@ -259,6 +263,7 @@ def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=F
         end_date: End date for training data (YYYY-MM-DD)
         verbose: Whether to print detailed training logs
         return_data: If True, return X, y_direction for testing purposes
+        use_cache: If True, use cached models when available (default: True)
     
     Returns:
         Dictionary containing:
@@ -268,8 +273,27 @@ def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=F
         - ticker: Stock ticker
         - latest_features: Today's features for predicting tomorrow
         - predict: Function to make predictions on new data
+        - cached: Whether this result came from cache
         - test_data: (optional) Test set data for evaluation
     """
+    ticker = ticker.upper()
+    
+    # Try to load from cache first if enabled
+    if use_cache:
+        cached_result = _model_cache.get(ticker)
+        if cached_result is not None:
+            if verbose:
+                print(f"[CACHE] ✓ Using cached model for {ticker}")
+            
+            # Re-add the predict function
+            cached_result["predict"] = lambda X_new: make_prediction(cached_result, X_new)
+            cached_result["cached"] = True
+            return cached_result
+    
+    # No cache or cache disabled - train new models
+    if verbose:
+        print(f"[TRAINING] Training new models for {ticker}...")
+    
     stock_data = fetch_raw_stock_data(ticker, start_date, end_date)
     if stock_data is None:
         if verbose:
@@ -579,15 +603,22 @@ def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=F
         },
         "confidence": confidence,
         "ticker": ticker,
-        "latest_features": latest_features  # <--- ADDED: Today's features for predicting tomorrow
+        "latest_features": latest_features,
+        "cached": False  # Newly trained model
     }
     
-    # Add prediction function as a method
+    # Add prediction function
     def predict(X_new):
         """Make predictions on new data using trained models."""
         return make_prediction(result, X_new)
     
     result["predict"] = predict
+    
+    # Save to cache if enabled
+    if use_cache:
+        _model_cache.save(ticker, result)
+        if verbose:
+            print(f"[CACHE] ✓ Models trained and cached for {ticker}")
     
     # Optionally return test data for analysis
     if return_data:
@@ -599,3 +630,8 @@ def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=F
         }
     
     return result
+
+
+def get_model_cache():
+    """Get the global model cache instance for manual cache operations"""
+    return _model_cache

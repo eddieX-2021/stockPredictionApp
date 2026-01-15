@@ -1,192 +1,114 @@
 """
-Pre-train popular stock tickers to populate cache
-Run this script weekly (or whenever you want to refresh popular tickers)
+Pre-train popular stock tickers to populate cache.
+Directly imports the training logic (Serverless) - Perfect for GitHub Actions.
 
 Usage:
-    python scripts/pre_train_popular_tickers.py
-    
-Or with custom API URL:
-    python scripts/pre_train_popular_tickers.py --api-url http://localhost:8000
+    # Run from the root directory (ai_stock_backend)
+    python -m scripts.pre_train_popular_tickers
 """
 
-import requests
+import sys
+import os
 import time
-import argparse
-from datetime import datetime
+import random
+from datetime import datetime, timedelta
 
+# -----------------------------------------------------------------------------
+# PATH SETUP (Crucial so we can import 'app')
+# -----------------------------------------------------------------------------
+# Add the project root to Python path
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(current_dir)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
-# Popular tickers to pre-train
+# Now we can import directly from our app
+from app.mlm_predict.train_model import train_stock_models
+
+# -----------------------------------------------------------------------------
+# CONFIGURATION
+# -----------------------------------------------------------------------------
 POPULAR_TICKERS = [
-    # Mega Caps (Tech Giants)
-    'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA',
+    # Mega Caps
+    'AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'META', 'TSLA', 'AMD',
     
-    # # Major Indices ETFs
-    # 'SPY', 'VOO',
+    # Indices
+    'SPY', 'QQQ',
     
-    # # Popular Tech Stocks
-    # 'AMD', 'INTC', 'NFLX', 
-    
-    # 'ADBE', 'CRM', 'ORCL', 'NBIS', 'RDDT',
-
-    # # Space
-    # 'ASTS', 'RKLB', 'LUNR',
-
-    # # Database
-    # 'PLTR', 'MU',
-    
-    # # Finance
-    # 'JPM', 'BAC', 'GS', 'V', 'MA',
-    
-    # # Consumer
-    # 'DIS', 'NKE', 'SBUX', 'MCD', 'KO', 'PEP',
-    
-    # # Healthcare
-    # 'UNH', 'JNJ', 'PFE', 'ABBV',
-    
-    # # Energy
-    # 'XOM', 'CVX',
-    
-    # # Industrial/Aerospace
-    # 'BA', 'CAT',
-    
-    # # Communication
-    # 'T', 'VZ',
-    
-    # # Crypto-related
-    # 'COIN', 'MSTR'
+    # You can uncomment these as your capacity grows
+    # 'JPM', 'DIS', 'NFLX', 'COIN'
 ]
 
-
-def pre_train_tickers(api_url: str, tickers: list):
-    """
-    Pre-train models for a list of tickers
+def main():
+    print("="*70)
+    print("PRE-TRAINING POPULAR STOCK TICKERS (Serverless Mode)")
+    print("="*70)
     
-    Args:
-        api_url: Base URL of the API (e.g., http://localhost:8000)
-        tickers: List of ticker symbols to pre-train
-    """
-    print("="*70)
-    print("PRE-TRAINING POPULAR STOCK TICKERS")
-    print("="*70)
-    print(f"API URL: {api_url}")
-    print(f"Tickers to train: {len(tickers)}")
-    print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("="*70)
-    print()
+    # Date setup (Train on last ~5 years of data)
+    end_date = datetime.now().strftime('%Y-%m-%d')
+    start_date = (datetime.now() - timedelta(days=1825)).strftime('%Y-%m-%d')
     
     successful = []
     failed = []
-    skipped = []
     
-    for i, ticker in enumerate(tickers, 1):
-        print(f"[{i}/{len(tickers)}] Training {ticker}...", end=" ")
+    print(f"Target Date Range: {start_date} to {end_date}")
+    print(f"Tickers to process: {len(POPULAR_TICKERS)}\n")
+
+    for i, ticker in enumerate(POPULAR_TICKERS, 1):
+        print(f"[{i}/{len(POPULAR_TICKERS)}] Processing {ticker}...", end=" ", flush=True)
+        
+        start_time = time.time()
         
         try:
-            start_time = time.time()
-            
-            # Make prediction request (will train if not cached)
-            response = requests.get(
-                f"{api_url}/predict",
-                params={"stock": ticker},
-                timeout=600  # 2 minute timeout per ticker
+            # -------------------------------------------------------
+            # DIRECT CALL (No HTTP Request needed)
+            # We set use_cache=False to FORCE a retrain/update
+            # -------------------------------------------------------
+            result = train_stock_models(
+                ticker=ticker,
+                start_date=start_date,
+                end_date=end_date,
+                verbose=False,     # Keep logs clean
+                use_cache=False    # CRITICAL: Force update!
             )
             
             elapsed = time.time() - start_time
             
-            if response.status_code == 200:
-                data = response.json()
-                was_cached = data.get("model_info", {}).get("cached", False)
-                
-                if was_cached:
-                    print(f"✓ Already cached ({elapsed:.1f}s)")
-                    skipped.append(ticker)
-                else:
-                    print(f"✓ Trained successfully ({elapsed:.1f}s)")
-                    successful.append(ticker)
-                    
-                # Show prediction info
-                print(f"    → Prediction: {data['direction']} {data['predicted_change_pct']:+.2f}% "
-                      f"(confidence: {data['confidence']:.2%})")
+            if result:
+                # Print a small summary of what the new model thinks
+                direction = result['direction']['best_model_name']
+                acc = result['direction']['metrics']['test']['Accuracy']
+                print(f"✓ Saved ({elapsed:.1f}s) | Dir Acc: {acc:.2%}")
+                successful.append(ticker)
             else:
-                print(f"✗ Failed (HTTP {response.status_code})")
-                failed.append((ticker, f"HTTP {response.status_code}"))
-                
-        except requests.exceptions.Timeout:
-            print(f"✗ Timeout (>120s)")
-            failed.append((ticker, "Timeout"))
+                print("✗ Failed (No result returned)")
+                failed.append(ticker)
+
         except Exception as e:
-            print(f"✗ Error: {str(e)}")
-            failed.append((ticker, str(e)))
-        
-        # Small delay between requests to avoid overwhelming the server
-        if i < len(tickers):
-            time.sleep(1)
-    
-    # Summary
-    print()
+            print(f"✗ Error: {e}")
+            failed.append(ticker)
+            
+        # Rate Limiting (Be nice to Yahoo Finance)
+        # Sleep 5-10 seconds to look like a human
+        sleep_time = random.uniform(5, 10)
+        time.sleep(sleep_time)
+
+    # -----------------------------------------------------------------------------
+    # SUMMARY
+    # -----------------------------------------------------------------------------
+    print("\n" + "="*70)
+    print("SUMMARY")
     print("="*70)
-    print("PRE-TRAINING SUMMARY")
-    print("="*70)
-    print(f"Total tickers: {len(tickers)}")
-    print(f"Successfully trained: {len(successful)}")
-    print(f"Already cached: {len(skipped)}")
+    print(f"Total: {len(POPULAR_TICKERS)}")
+    print(f"Success: {len(successful)}")
     print(f"Failed: {len(failed)}")
-    print(f"Completed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("="*70)
-    
-    if successful:
-        print(f"\n✓ Trained: {', '.join(successful)}")
-    
-    if skipped:
-        print(f"\n⊙ Skipped (already cached): {', '.join(skipped)}")
     
     if failed:
-        print(f"\n✗ Failed:")
-        for ticker, reason in failed:
-            print(f"  - {ticker}: {reason}")
+        print(f"\nFailed Tickers: {', '.join(failed)}")
+        sys.exit(1) # Fail the action if stocks failed
     
-    print()
-    
-    # Return stats for programmatic use
-    return {
-        'successful': successful,
-        'skipped': skipped,
-        'failed': failed,
-        'total': len(tickers)
-    }
-
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="Pre-train popular stock tickers for model caching"
-    )
-    parser.add_argument(
-        '--api-url',
-        type=str,
-        default='http://localhost:8000',
-        help='Base URL of the API (default: http://localhost:8000)'
-    )
-    parser.add_argument(
-        '--tickers',
-        type=str,
-        nargs='+',
-        help='Custom list of tickers to train (overrides default popular list)'
-    )
-    
-    args = parser.parse_args()
-    
-    # Use custom tickers if provided, otherwise use default popular list
-    tickers = args.tickers if args.tickers else POPULAR_TICKERS
-    
-    # Run pre-training
-    results = pre_train_tickers(args.api_url, tickers)
-    
-    # Exit with error code if any failed
-    if results['failed']:
-        exit(1)
-    else:
-        exit(0)
-
+    print("\nAll models updated in 'saved_models/'. Ready to commit.")
+    sys.exit(0)
 
 if __name__ == "__main__":
     main()
