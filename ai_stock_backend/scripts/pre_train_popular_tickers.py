@@ -23,7 +23,8 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 # Now we can import directly from our app
-from app.mlm_predict.train_model import train_stock_models
+# CHANGE 1: Added get_model_cache to imports
+from app.mlm_predict.train_model import train_stock_models, get_model_cache
 
 # -----------------------------------------------------------------------------
 # CONFIGURATION
@@ -47,6 +48,9 @@ def main():
     # Date setup (Train on last ~5 years of data)
     end_date = datetime.now().strftime('%Y-%m-%d')
     start_date = (datetime.now() - timedelta(days=1825)).strftime('%Y-%m-%d')
+    
+    # CHANGE 2: Get the cache instance so we can manually save
+    cache = get_model_cache()
     
     successful = []
     failed = []
@@ -75,6 +79,9 @@ def main():
             elapsed = time.time() - start_time
             
             if result:
+                # CHANGE 3: Manually save because use_cache=False skips auto-save
+                cache.save(ticker, result)
+                
                 # Print a small summary of what the new model thinks
                 direction = result['direction']['best_model_name']
                 acc = result['direction']['metrics']['test']['Accuracy']
@@ -90,7 +97,7 @@ def main():
             
         # Rate Limiting (Be nice to Yahoo Finance)
         # Sleep 5-10 seconds to look like a human
-        sleep_time = random.uniform(5, 10)
+        sleep_time = random.uniform(5, 8)
         time.sleep(sleep_time)
 
     # -----------------------------------------------------------------------------
@@ -107,7 +114,7 @@ def main():
         print(f"\nFailed Tickers: {', '.join(failed)}")
         sys.exit(1) # Fail the action if stocks failed
     
-    print("\nAll models updated in 'saved_models/'. Ready to commit.")
+    print("\nAll models updated in 'model_cache/'. Ready to commit.")
     sys.exit(0)
 
 if __name__ == "__main__":

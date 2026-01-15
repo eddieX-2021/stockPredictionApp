@@ -15,10 +15,6 @@ permissions:
 jobs:
   retrain-models:
     runs-on: ubuntu-latest
-    
-    defaults:
-      run:
-        working-directory: ai_stock_backend
 
     steps:
       - name: Checkout code
@@ -29,39 +25,59 @@ jobs:
         with:
           python-version: '3.11'
           cache: 'pip'
+          cache-dependency-path: 'ai_stock_backend/requirements.txt'
 
       - name: Install dependencies
+        working-directory: ai_stock_backend
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
 
       - name: Run Serverless Training Script
+        working-directory: ai_stock_backend
         env:
           PYTHONPATH: . 
         run: |
           echo "Starting serverless training..."
-          # This script will create/update files in ai_stock_backend/model_cache/
           python -m scripts.pre_train_popular_tickers
 
-      - name: Verify Files
+      - name: Verify model cache was created
         run: |
-          echo "Checking for saved models in model_cache..."
-          # List the model_cache directory to verify files exist
-          ls -R model_cache/ || echo "No model_cache directory found!"
+          echo "=== Checking for saved models ==="
+          if [ -d "ai_stock_backend/model_cache" ]; then
+            echo "✓ model_cache directory exists"
+            echo ""
+            echo "Contents:"
+            ls -lh ai_stock_backend/model_cache/
+            echo ""
+            echo "File count: $(ls -1 ai_stock_backend/model_cache/ | wc -l)"
+          else
+            echo "✗ model_cache directory NOT found!"
+            exit 1
+          fi
 
-      - name: Commit and Push
+      - name: Check git status
+        run: |
+          echo "=== Git Status ==="
+          git status
+          echo ""
+          echo "=== Untracked/Modified files in model_cache ==="
+          git status --porcelain | grep model_cache || echo "No changes in model_cache"
+
+      - name: Commit and Push Models
         run: |
           git config --global user.name 'GitHub Action'
           git config --global user.email 'action@github.com'
           
-          # FIX: We now add the 'model_cache' folder
-          # Because we are in 'ai_stock_backend', this points to 'ai_stock_backend/model_cache'
-          git add model_cache/
+          # Add the model_cache directory from repo root
+          git add ai_stock_backend/model_cache/
           
-          # Commit if there are changes
+          # Check if there are changes to commit
           if git diff --staged --quiet; then
             echo "No changes to trained models. Skipping commit."
           else
+            echo "Changes detected. Committing..."
             git commit -m "Auto-update trained models [skip ci]"
             git push
+            echo "✓ Models pushed to repository"
           fi
