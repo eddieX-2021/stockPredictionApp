@@ -1,53 +1,70 @@
 name: Weekly Model Retrain
 
 on:
-  # Run every Sunday at 2 AM UTC (9 PM EST Saturday / 10 PM EDT Saturday)
+  # Run every Sunday at 2 AM UTC
   schedule:
     - cron: '0 2 * * 0'
   
-  # Allow manual trigger from GitHub Actions tab
+  # Allow manual trigger
   workflow_dispatch:
+
+# Grant permission to push changes back to the repo
+permissions:
+  contents: write
 
 jobs:
   retrain-models:
     runs-on: ubuntu-latest
     
+    defaults:
+      run:
+        working-directory: ai_stock_backend
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      
-      - name: Install dependencies
-        run: |
-          pip install requests
-      
-      - name: Clear expired cache
-        run: |
-          echo "Clearing expired cache entries..."
-          curl -X POST ${{ secrets.API_URL }}/cache/clear-expired || echo "Failed to clear cache (API might be down)"
-      
-      - name: Pre-train popular tickers
-        working-directory: ai_stock_backend
-        env:
-          API_URL: ${{ secrets.API_URL }}
-        run: |
-          echo "Starting pre-training of popular tickers..."
-          echo "Using API_URL=$API_URL"
-          python scripts/pre_train_popular_tickers.py --api-url "$API_URL"
+          cache: 'pip' # Caches dependencies to speed up future runs
 
-        continue-on-error: true
-      
-      - name: Get cache statistics
+      - name: Install dependencies
+        # We MUST install all ML libraries (pandas, sklearn, catboost, etc.)
+        # Make sure you have a requirements.txt in ai_stock_backend/
         run: |
-          echo "Fetching final cache statistics..."
-          curl ${{ secrets.API_URL }}/cache/stats | python -m json.tool || echo "Failed to fetch stats"
-      
-      - name: Send notification on failure
-        if: failure()
+          pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          # Fallback: manually install key libs if requirements.txt is missing/incomplete
+          pip install pandas numpy scikit-learn xgboost catboost joblib yfinance fastapirequests
+
+      - name: Run Serverless Training Script
+        # We run this as a module (-m) to ensure imports work correctly
+        env:
+          PYTHONPATH: . 
         run: |
-          echo "⚠️ Weekly retrain failed! Check the logs."
-          # Optional: Add Slack/Discord webhook notification here
+          echo "Starting serverless training..."
+          python -m scripts.pre_train_popular_tickers
+
+      - name: Verify Files
+        run: |
+          echo "Checking for saved models..."
+          ls -R app/mlm_predict/saved_models/ || echo "No models directory found!"
+
+      - name: Commit and Push
+        run: |
+          git config --global user.name 'GitHub Action'
+          git config --global user.email 'action@github.com'
+          
+          # Add the saved_models directory
+          # Since we are in 'ai_stock_backend' working dir, this path is relative to it
+          git add app/mlm_predict/saved_models/
+          
+          # Commit if there are changes
+          if git diff --staged --quiet; then
+            echo "No changes to trained models. Skipping commit."
+          else
+            git commit -m "Auto-update trained models [skip ci]"
+            git push
+          fi
