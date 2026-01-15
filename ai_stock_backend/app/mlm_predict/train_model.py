@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+# CHANGED: Added HistGradientBoosting, removed others to clean up imports
 from sklearn.ensemble import (RandomForestClassifier, RandomForestRegressor,
                               GradientBoostingClassifier, GradientBoostingRegressor,
                               AdaBoostClassifier, AdaBoostRegressor,
@@ -256,25 +257,6 @@ def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=F
     """
     Train dual prediction system: direction (up/down) and magnitude (% change).
     Automatically handles caching - checks cache first, trains if needed, saves result.
-    
-    Args:
-        ticker: Stock ticker symbol
-        start_date: Start date for training data (YYYY-MM-DD)
-        end_date: End date for training data (YYYY-MM-DD)
-        verbose: Whether to print detailed training logs
-        return_data: If True, return X, y_direction for testing purposes
-        use_cache: If True, use cached models when available (default: True)
-    
-    Returns:
-        Dictionary containing:
-        - direction: Direction model info and metrics
-        - magnitude: Magnitude model info and metrics
-        - confidence: Overall system confidence (high/medium/low)
-        - ticker: Stock ticker
-        - latest_features: Today's features for predicting tomorrow
-        - predict: Function to make predictions on new data
-        - cached: Whether this result came from cache
-        - test_data: (optional) Test set data for evaluation
     """
     ticker = ticker.upper()
     
@@ -355,94 +337,103 @@ def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=F
     if verbose:
         print(f"Class weights: DOWN={class_weight_dict[0]:.3f}, UP={class_weight_dict[1]:.3f}\n")
 
-    # Direction models with class balancing
+    # =========================================================================
+    # CHANGED: Performance-Oriented Model Selection (The "Big Three")
+    # =========================================================================
     direction_models = {
+        # Logistic Regression: Kept as an Anchor (Baseline)
         "Logistic Regression": LogisticRegression(
             class_weight='balanced',
             max_iter=1000, 
             random_state=42
         ),
-        "Random Forest": RandomForestClassifier(
-            class_weight='balanced',
-            n_estimators=200, 
-            max_depth=10, 
-            min_samples_split=5, 
-            random_state=42
-        ),
-        "Gradient Boosting": GradientBoostingClassifier(
-            n_estimators=150, 
-            learning_rate=0.05, 
-            max_depth=5, 
-            random_state=42
-        ),
-        "HistGradient Boosting": HistGradientBoostingClassifier(
-            max_iter=150, 
-            learning_rate=0.05, 
-            max_depth=10, 
-            random_state=42
-        ),
+        
+        # XGBoost: Optimized for generalization (lower LR, higher estimators)
         "XGBoost": XGBClassifier(
-            n_estimators=150, 
-            learning_rate=0.05, 
-            max_depth=6,
+            n_estimators=300, 
+            learning_rate=0.03, 
+            max_depth=4, 
+            subsample=0.8, 
+            colsample_bytree=0.8,
             scale_pos_weight=class_weight_dict[1]/class_weight_dict[0],
+            eval_metric='logloss',
             random_state=42, 
-            eval_metric='logloss'
+            n_jobs=1
         ),
+        
+        # CatBoost: Optimized with Regularization (l2_leaf_reg=5)
         "CatBoost": CatBoostClassifier(
-            iterations=150, 
-            depth=8, 
-            learning_rate=0.05,
+            iterations=300, 
+            depth=6, 
+            learning_rate=0.03,
+            l2_leaf_reg=5,
             class_weights=class_weight_dict,
             verbose=False, 
-            random_state=42
+            random_state=42,
+            allow_writing_files=False
         ),
-        "MLP": MLPClassifier(
-            hidden_layer_sizes=(100, 50), 
-            max_iter=500, 
+        
+        # HistGradient: Replaces standard GradientBoosting (Faster, Better)
+        "HistGradient": HistGradientBoostingClassifier(
+            max_iter=300,
+            learning_rate=0.03,
+            max_depth=6,
+            l2_regularization=1.0,
             random_state=42
         )
     }
     
     if LIGHTGBM_AVAILABLE:
         direction_models["LightGBM"] = LGBMClassifier(
-            n_estimators=150, 
-            learning_rate=0.05, 
-            max_depth=8,
-            class_weight='balanced',
+            n_estimators=300, 
+            learning_rate=0.03, 
+            max_depth=5, 
+            class_weight='balanced', 
             random_state=42, 
-            verbose=-1
+            verbose=-1,
+            n_jobs=1
         )
 
-    # Magnitude models
+    # =========================================================================
+    # CHANGED: Performance-Oriented Magnitude Models
+    # =========================================================================
     magnitude_models = {
         "Ridge": Ridge(alpha=1.0, random_state=42),
-        "Random Forest": RandomForestRegressor(
-            n_estimators=200, max_depth=10, min_samples_split=5, random_state=42
-        ),
-        "Gradient Boosting": GradientBoostingRegressor(
-            n_estimators=150, learning_rate=0.05, max_depth=5, random_state=42
-        ),
-        "HistGradient Boosting": HistGradientBoostingRegressor(
-            max_iter=150, learning_rate=0.05, max_depth=10, random_state=42
-        ),
         "XGBoost": XGBRegressor(
-            n_estimators=150, learning_rate=0.05, max_depth=6,
-            objective="reg:squarederror", random_state=42
+            n_estimators=300, 
+            learning_rate=0.03, 
+            max_depth=4, 
+            subsample=0.8, 
+            objective="reg:squarederror", 
+            random_state=42,
+            n_jobs=1
         ),
         "CatBoost": CatBoostRegressor(
-            iterations=150, depth=8, learning_rate=0.05,
-            verbose=False, random_state=42
+            iterations=300, 
+            depth=6, 
+            learning_rate=0.03, 
+            l2_leaf_reg=5,
+            verbose=False, 
+            random_state=42,
+            allow_writing_files=False
         ),
-        "MLP": MLPRegressor(
-            hidden_layer_sizes=(100, 50), max_iter=500, random_state=42
+        "HistGradient": HistGradientBoostingRegressor(
+            max_iter=300,
+            learning_rate=0.03,
+            max_depth=6,
+            l2_regularization=1.0,
+            random_state=42
         )
     }
     
     if LIGHTGBM_AVAILABLE:
         magnitude_models["LightGBM"] = LGBMRegressor(
-            n_estimators=150, learning_rate=0.05, max_depth=8,
-            random_state=42, verbose=-1
+            n_estimators=300, 
+            learning_rate=0.03, 
+            max_depth=5, 
+            random_state=42, 
+            verbose=-1,
+            n_jobs=1
         )
 
     # Train direction models
@@ -451,9 +442,10 @@ def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=F
         print("TRAINING DIRECTION MODELS (Up/Down)")
         print("="*60)
     
-    n_jobs = min(len(direction_models), os.cpu_count() or 1)
+    # We enforce n_jobs=1 internally for models, but loop in parallel unless on limited env
+    n_jobs_parallel = -1 if not (os.environ.get('RENDER') or os.environ.get('CI')) else 1
     
-    dir_results = Parallel(n_jobs=n_jobs, backend='threading', verbose=0)(
+    dir_results = Parallel(n_jobs=n_jobs_parallel, backend='threading', verbose=0)(
         delayed(train_direction_model)(
             name, model, X_train, y_dir_train, X_val, y_dir_val, X_test, y_dir_test,
             StandardScaler() if name in MODELS_NEEDING_SCALING else None
@@ -487,7 +479,7 @@ def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=F
         print("TRAINING MAGNITUDE MODELS (% Change)")
         print("="*60)
     
-    mag_results = Parallel(n_jobs=n_jobs, backend='threading', verbose=0)(
+    mag_results = Parallel(n_jobs=n_jobs_parallel, backend='threading', verbose=0)(
         delayed(train_magnitude_model)(
             name, model, X_train, y_mag_train, X_val, y_mag_val, X_test, y_mag_test,
             StandardScaler() if name in MODELS_NEEDING_SCALING else None
@@ -525,8 +517,10 @@ def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=F
     best_mag_scaler = mag_scalers.get(best_mag_name, None)
 
     # Create ensembles
+    # CHANGED: Filter out "Logistic Regression" from the direction ensemble to avoid dilution
+    ensemble_candidates = [(name, metrics) for name, metrics in dir_report.items() if name != "Logistic Regression"]
     top_dir_models = sorted(
-        [(name, metrics) for name, metrics in dir_report.items()],
+        ensemble_candidates,
         key=lambda x: x[1]["validation"]["F1"],
         reverse=True
     )[:3]
@@ -541,9 +535,10 @@ def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=F
             "model_names": [name for name, _ in top_dir_models]
         }
     
+    # CHANGED: Filter out "Ridge" from the magnitude ensemble
+    mag_ensemble_candidates = [(name, metrics) for name, metrics in mag_report.items() if name != "Ridge"]
     top_mag_models = sorted(
-        [(name, metrics) for name, metrics in mag_report.items()
-         if metrics["validation"]["R²"] > 0],
+        [m for m in mag_ensemble_candidates if m[1]["validation"]["R²"] > 0],
         key=lambda x: x[1]["validation"]["R²"],
         reverse=True
     )[:3]

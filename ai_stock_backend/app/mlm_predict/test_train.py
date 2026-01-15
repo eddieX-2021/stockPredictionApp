@@ -197,3 +197,38 @@ if __name__ == "__main__":
     
     print(f"\n✅ Testing complete. Successfully tested {len(results)}/{len(TICKERS)} tickers.")
     print("Model artifacts saved in 'results' dictionary.")
+    # ---------------------------------------------------------
+    # AUTO-CLEANUP: Delete ALL local test files (models + metadata)
+    # ---------------------------------------------------------
+    print("\n" + "="*70)
+    print("🧹 CLEANING UP LOCAL ARTIFACTS")
+    print("="*70)
+    
+    import os
+    
+    # Define where the cache lives
+    cache_dir = "model_cache"
+    
+    if os.path.exists(cache_dir):
+        # 1. Delete individual ticker files
+        for ticker in TICKERS:
+            file_path = os.path.join(cache_dir, f"{ticker}_model.pkl")
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                    print(f"✓ Deleted local file: {file_path}")
+                except Exception as e:
+                    print(f"✗ Could not delete {file_path}: {e}")
+        
+        # 2. Delete the metadata file (CRITICAL for clean Git status)
+        metadata_path = os.path.join(cache_dir, "cache_metadata.json")
+        if os.path.exists(metadata_path):
+            try:
+                os.remove(metadata_path)
+                print(f"✓ Deleted metadata: {metadata_path}")
+            except Exception as e:
+                print(f"✗ Could not delete metadata: {e}")
+                
+        print("\n✨ Local cache is clean. No Git conflicts!")
+    else:
+        print("No cache directory found to clean.")
