@@ -11,7 +11,7 @@ from app.headline.src.predictor import predict_sentiments as predict_news_sentim
 from app.reddit.src.fetch_reddit import fetch_reddit
 from app.reddit.src.predictor import predict_sentiments as predict_reddit_sentiments
 
-# financial‐statement endpoint
+# financial statement endpoint
 from app.financial_statement.src.fetch_fin import fetch_financials
 from app.financial_statement.src.predictor import predict_stock_movement
 
@@ -32,7 +32,7 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# ─── CORS ─────────────────────────────────────────────────────────
+# ─── CORS ────────────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -49,34 +49,74 @@ app.add_middleware(
 app.include_router(router)
 
 
-# ─── /api/news ────────────────────────────────────────────────────
+# ─── /api/news ───────────────────────────────────────────────────────────────
 @app.post("/api/news")
 async def news_sentiment(req: TickerRequest):
     t = req.ticker.strip().upper()
-    headlines = get_top_headlines(t)
-    sentiments = predict_news_sentiments(headlines)
-    return {
-        "ticker": t,
-        "news": [
-            {"headline": h, "sentiment": s}
-            for h, s in zip(headlines, sentiments)
-        ]
-    }
+    
+    try:
+        headlines = get_top_headlines(t)
+        
+        # Handle empty headlines gracefully
+        if not headlines or len(headlines) == 0:
+            print(f"No news headlines found for {t}")
+            return {
+                "ticker": t,
+                "news": [],
+                "message": "No recent news articles found"
+            }
+        
+        sentiments = predict_news_sentiments(headlines)
+        
+        return {
+            "ticker": t,
+            "news": [
+                {"headline": h, "sentiment": s}
+                for h, s in zip(headlines, sentiments)
+            ]
+        }
+    except Exception as e:
+        print(f"Error in news_sentiment for {t}: {e}")
+        # Return empty results instead of crashing
+        return {
+            "ticker": t,
+            "news": [],
+            "error": "Unable to fetch news at this time"
+        }
 
 
-# ─── /api/reddit ──────────────────────────────────────────────────
+# ─── /api/reddit ─────────────────────────────────────────────────────────────
 @app.post("/api/reddit")
 async def reddit_sentiment(req: TickerRequest):
     t = req.ticker.strip().upper()
-    posts = fetch_reddit(t)
-    sentiments = predict_reddit_sentiments(posts)
-    return {
-        "ticker": t,
-        "reddit": [
-            {"post": p, "sentiment": s}
-            for p, s in zip(posts, sentiments)
-        ]
-    }
+    
+    try:
+        posts = fetch_reddit(t)
+        
+        if not posts or len(posts) == 0:
+            print(f"⚠️ No Reddit posts found for {t}")
+            return {
+                "ticker": t,
+                "reddit": [],
+                "message": "No recent Reddit discussions found"
+            }
+        
+        sentiments = predict_reddit_sentiments(posts)
+        
+        return {
+            "ticker": t,
+            "reddit": [
+                {"post": p, "sentiment": s}
+                for p, s in zip(posts, sentiments)
+            ]
+        }
+    except Exception as e:
+        print(f"Error in reddit_sentiment for {t}: {e}")
+        return {
+            "ticker": t,
+            "reddit": [],
+            "error": "Unable to fetch Reddit data at this time"
+        }
 
 
 from app.services.json_safe import json_safe
@@ -89,6 +129,7 @@ async def financials(req: TickerRequest):
         fin_data = fetch_financials(t)
         direction, confidence = predict_stock_movement(t, fin_data)
     except Exception as e:
+        print(f" Error in financials for {t}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
     response = {
@@ -98,11 +139,11 @@ async def financials(req: TickerRequest):
         "confidence": confidence,
     }
 
-    # 🔥 THIS PREVENTS THE CRASH
+    # THIS PREVENTS THE CRASH
     return json_safe(response)
 
 
-# ─── CLI / TRAIN (optional) ────────────────────────────────────────
+# ─── CLI / TRAIN (optional) ──────────────────────────────────────────────────
 def main():
     eastern = pytz.timezone('US/Eastern')
     end_date = (datetime.now(eastern) - timedelta(days=1)).strftime("%Y-%m-%d")
