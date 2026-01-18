@@ -282,23 +282,41 @@ def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=F
             print("Failed to fetch data.")
         return None
 
-    # Extended training window
-    stock_data = stock_data.tail(1250)
+    # DON'T cut the data yet - we need the full history for feature calculation
+    # Feature generation needs lookback for rolling windows (MA50, 252-day high, etc.)
+    if verbose:
+        print(f"Fetched {len(stock_data)} rows of raw data")
 
-    X, y_price, stock_data = generate_features(stock_data)
+    # Generate features with full historical data for proper rolling window calculations
+    result = generate_features(stock_data, return_latest_for_prediction=True)
+
+    if len(result) == 4:
+        # We got the prediction row separated
+        X, y_price, stock_data, latest_features = result
+        if verbose:
+            print(f"✓ Latest features captured for prediction (shape: {latest_features.shape})")
+    else:
+        # Fallback (shouldn't happen with current data)
+        X, y_price, stock_data = result
+        latest_features = None
+        if verbose:
+            print("⚠ No prediction row available (data might be stale)")
+
     if X is None or y_price is None:
         if verbose:
             print("Failed to generate features.")
         return None
 
-    # --- CRITICAL: Capture today's features BEFORE removing the last row ---
-    # This is what we need to predict tomorrow!
-    latest_features = X.iloc[-1:]
+    # NOW cut to last 1250 rows for training (features are already calculated correctly)
+    if len(X) > 1250:
+        X = X.tail(1250)
+        y_price = y_price.tail(1250)
+        stock_data = stock_data.tail(1250)
+        if verbose:
+            print(f"✓ Trimmed to last 1250 rows for training efficiency")
     
-    # Align the data (remove last row for training)
-    X = X.iloc[:-1]
-    y_price = y_price.iloc[:-1]
-    current_prices = stock_data['Close'].iloc[:-1].values
+    # Align the data
+    current_prices = stock_data['Close'].values
     
     # Create direction target (1 = up, 0 = down)
     y_direction = (y_price.values > current_prices).astype(int)

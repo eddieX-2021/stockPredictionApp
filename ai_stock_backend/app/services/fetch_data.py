@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 from app.services.cache import TTLCache
+
 _market_cache = TTLCache(ttl_seconds=24 * 3600)
 
 def fetch_raw_stock_data(ticker, start_date, end_date):
@@ -71,10 +72,21 @@ def fetch_market_context(start_date, end_date):
         return None
 
 
-def generate_features(stock_data):
+def generate_features(stock_data, return_latest_for_prediction=False):
     """
     Generate BIAS-NEUTRAL features optimized for predicting direction and magnitude.
     Features focus on magnitude, deviation from normal, and relative positioning rather than raw directional values.
+    
+    Args:
+        stock_data: DataFrame with OHLCV data
+        return_latest_for_prediction: If True, returns the latest row (with NaN target) separately
+                                      for making live predictions
+    
+    Returns:
+        If return_latest_for_prediction=False (default, for training):
+            X, y, stock_data (all with valid targets, NaN rows dropped)
+        If return_latest_for_prediction=True (for prediction):
+            X, y, stock_data, latest_features (latest_features has NaN target but valid features)
     """
     try:
         # Get date range from stock data
@@ -312,12 +324,6 @@ def generate_features(stock_data):
         # Next day's closing price
         stock_data['Target'] = stock_data['Close'].shift(-1)
         
-        # Drop NaN rows
-        stock_data = stock_data.dropna()
-        
-        if len(stock_data) < 20:
-            raise ValueError(f"Insufficient data after feature generation: {len(stock_data)} rows")
-        
         # ==========================================
         # FINAL FEATURE SELECTION (BIAS-NEUTRAL)
         # ==========================================
@@ -369,22 +375,70 @@ def generate_features(stock_data):
         # Filter out features that don't exist (in case market data fetch failed)
         features = [f for f in features if f in stock_data.columns]
         
-        X = stock_data[features]
-        y = stock_data['Target']
+        # Check if the last row has NaN target (means it's for prediction)
+        has_prediction_row = pd.isna(stock_data['Target'].iloc[-1])
         
-        # Final validation
-        if X.isna().any().any():
-            print("WARNING: NaN values detected, filling with 0")
-            X = X.fillna(0)
+        if has_prediction_row and return_latest_for_prediction:
+            # Save the latest row for prediction (has valid features, NaN target)
+            latest_row = stock_data.iloc[-1:]
+            latest_features = latest_row[features]
+            
+            # Handle any NaN or inf in latest features
+            if latest_features.isna().any().any():
+                print("WARNING: NaN values in latest features, filling with 0")
+                latest_features = latest_features.fillna(0)
+            
+            if np.isinf(latest_features.values).any():
+                print("WARNING: Infinite values in latest features, replacing with 0")
+                latest_features = latest_features.replace([np.inf, -np.inf], 0)
+            
+            # Now drop rows with NaN targets for training data
+            stock_data = stock_data.dropna()
+            
+            if len(stock_data) < 20:
+                raise ValueError(f"Insufficient data after feature generation: {len(stock_data)} rows")
+            
+            X = stock_data[features]
+            y = stock_data['Target']
+            
+            # Final validation for training data
+            if X.isna().any().any():
+                print("WARNING: NaN values detected in training data, filling with 0")
+                X = X.fillna(0)
+            
+            if np.isinf(X.values).any():
+                print("WARNING: Infinite values detected in training data, replacing with 0")
+                X = X.replace([np.inf, -np.inf], 0)
+            
+            market_feature_count = 6 if market_data else 0
+            print(f"✓ Generated {len(features)} BIAS-NEUTRAL features (including {market_feature_count} market context features)")
+            print(f"✓ Separated latest row for prediction (features valid, target is NaN)")
+            
+            return X, y, stock_data, latest_features
         
-        if np.isinf(X.values).any():
-            print("WARNING: Infinite values detected, replacing with 0")
-            X = X.replace([np.inf, -np.inf], 0)
-        
-        market_feature_count = 6 if market_data else 0
-        print(f"✓ Generated {len(features)} BIAS-NEUTRAL features (including {market_feature_count} market context features)")
-        
-        return X, y, stock_data
+        else:
+            # Standard mode for training: drop all NaN rows
+            stock_data = stock_data.dropna()
+            
+            if len(stock_data) < 20:
+                raise ValueError(f"Insufficient data after feature generation: {len(stock_data)} rows")
+            
+            X = stock_data[features]
+            y = stock_data['Target']
+            
+            # Final validation
+            if X.isna().any().any():
+                print("WARNING: NaN values detected, filling with 0")
+                X = X.fillna(0)
+            
+            if np.isinf(X.values).any():
+                print("WARNING: Infinite values detected, replacing with 0")
+                X = X.replace([np.inf, -np.inf], 0)
+            
+            market_feature_count = 6 if market_data else 0
+            print(f"✓ Generated {len(features)} BIAS-NEUTRAL features (including {market_feature_count} market context features)")
+            
+            return X, y, stock_data
         
     except Exception as e:
         print(f"Error generating features: {e}")
