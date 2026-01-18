@@ -62,7 +62,7 @@ def test_single_ticker(ticker, start_date, end_date):
     print(f"Testing: {ticker}")
     print(f"{'='*70}")
     
-    result = train_stock_models(ticker, start_date, end_date)
+    result = train_stock_models(ticker, start_date, end_date, use_cache=False)
     
     if result:
         dir_info = result["direction"]

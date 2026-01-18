@@ -1,53 +1,83 @@
 name: Weekly Model Retrain
 
 on:
-  # Run every Sunday at 2 AM UTC (9 PM EST Saturday / 10 PM EDT Saturday)
+  # Run every Sunday at 2 AM UTC
   schedule:
     - cron: '0 2 * * 0'
   
-  # Allow manual trigger from GitHub Actions tab
+  # Allow manual trigger
   workflow_dispatch:
+
+# Grant permission to push changes back to the repo
+permissions:
+  contents: write
 
 jobs:
   retrain-models:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      
+          cache: 'pip'
+          cache-dependency-path: 'ai_stock_backend/requirements.txt'
+
       - name: Install dependencies
+        working-directory: ai_stock_backend
         run: |
-          pip install requests
-      
-      - name: Clear expired cache
-        run: |
-          echo "Clearing expired cache entries..."
-          curl -X POST ${{ secrets.API_URL }}/cache/clear-expired || echo "Failed to clear cache (API might be down)"
-      
-      - name: Pre-train popular tickers
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Serverless Training Script
         working-directory: ai_stock_backend
         env:
-          API_URL: ${{ secrets.API_URL }}
+          PYTHONPATH: . 
         run: |
-          echo "Starting pre-training of popular tickers..."
-          echo "Using API_URL=$API_URL"
-          python scripts/pre_train_popular_tickers.py --api-url "$API_URL"
+          echo "Starting serverless training..."
+          python -m scripts.pre_train_popular_tickers
 
-        continue-on-error: true
-      
-      - name: Get cache statistics
+      - name: Verify model cache was created
         run: |
-          echo "Fetching final cache statistics..."
-          curl ${{ secrets.API_URL }}/cache/stats | python -m json.tool || echo "Failed to fetch stats"
-      
-      - name: Send notification on failure
-        if: failure()
+          echo "=== Checking for saved models ==="
+          if [ -d "ai_stock_backend/model_cache" ]; then
+            echo "✓ model_cache directory exists"
+            echo ""
+            echo "Contents:"
+            ls -lh ai_stock_backend/model_cache/
+            echo ""
+            echo "File count: $(ls -1 ai_stock_backend/model_cache/ | wc -l)"
+          else
+            echo "✗ model_cache directory NOT found!"
+            exit 1
+          fi
+
+      - name: Check git status
         run: |
-          echo "⚠️ Weekly retrain failed! Check the logs."
-          # Optional: Add Slack/Discord webhook notification here
+          echo "=== Git Status ==="
+          git status
+          echo ""
+          echo "=== Untracked/Modified files in model_cache ==="
+          git status --porcelain | grep model_cache || echo "No changes in model_cache"
+
+      - name: Commit and Push Models
+        run: |
+          git config --global user.name 'GitHub Action'
+          git config --global user.email 'action@github.com'
+          
+          # Add the model_cache directory from repo root
+          git add ai_stock_backend/model_cache/
+          
+          # Check if there are changes to commit
+          if git diff --staged --quiet; then
+            echo "No changes to trained models. Skipping commit."
+          else
+            echo "Changes detected. Committing..."
+            git commit -m "Auto-update trained models [skip ci]"
+            git push
+            echo "✓ Models pushed to repository"
+          fi

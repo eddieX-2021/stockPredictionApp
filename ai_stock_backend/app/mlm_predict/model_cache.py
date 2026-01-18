@@ -17,12 +17,10 @@ class ModelCache:
     def __init__(self, cache_dir: str = "model_cache", cache_duration_days: int = 7):
         """
         Initialize model cache
-        
-        Args:
-            cache_dir: Directory to store cached models (relative to project root)
-            cache_duration_days: How many days before model expires (default: 7 = weekly)
         """
-        self.cache_dir = Path(cache_dir)
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        self.cache_dir = Path(base_dir) / cache_dir
+        
         self.cache_dir.mkdir(exist_ok=True)
         self.cache_duration = timedelta(days=cache_duration_days)
         self.metadata_file = self.cache_dir / "cache_metadata.json"

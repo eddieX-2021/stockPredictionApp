@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+# CHANGED: Added HistGradientBoosting, removed others to clean up imports
 from sklearn.ensemble import (RandomForestClassifier, RandomForestRegressor,
                               GradientBoostingClassifier, GradientBoostingRegressor,
                               AdaBoostClassifier, AdaBoostRegressor,
@@ -16,6 +17,7 @@ from sklearn.utils.class_weight import compute_class_weight
 from joblib import Parallel, delayed
 import os
 from app.services.fetch_data import fetch_raw_stock_data, generate_features
+from app.mlm_predict.model_cache import ModelCache
 
 # Optional: LightGBM
 try:
@@ -26,6 +28,9 @@ except ImportError:
 
 # Models that benefit from scaling
 MODELS_NEEDING_SCALING = {"Logistic Regression", "Ridge", "MLP"}
+
+# Initialize global model cache (survives across function calls)
+_model_cache = ModelCache(cache_dir="model_cache", cache_duration_days=7)
 
 
 def predict_ensemble_direction(X, ensemble_info):
@@ -248,28 +253,29 @@ def train_magnitude_model(name, model, X_train, y_train, X_val, y_val, X_test, y
         return name, None, None, None
 
 
-def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=False):
+def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=False, use_cache=True):
     """
     Train dual prediction system: direction (up/down) and magnitude (% change).
-    Returns comprehensive results for both models plus prediction function.
-    
-    Args:
-        ticker: Stock ticker symbol
-        start_date: Start date for training data (YYYY-MM-DD)
-        end_date: End date for training data (YYYY-MM-DD)
-        verbose: Whether to print detailed training logs
-        return_data: If True, return X, y_direction for testing purposes
-    
-    Returns:
-        Dictionary containing:
-        - direction: Direction model info and metrics
-        - magnitude: Magnitude model info and metrics
-        - confidence: Overall system confidence (high/medium/low)
-        - ticker: Stock ticker
-        - latest_features: Today's features for predicting tomorrow
-        - predict: Function to make predictions on new data
-        - test_data: (optional) Test set data for evaluation
+    Automatically handles caching - checks cache first, trains if needed, saves result.
     """
+    ticker = ticker.upper()
+    
+    # Try to load from cache first if enabled
+    if use_cache:
+        cached_result = _model_cache.get(ticker)
+        if cached_result is not None:
+            if verbose:
+                print(f"[CACHE] ✓ Using cached model for {ticker}")
+            
+            # Re-add the predict function
+            cached_result["predict"] = lambda X_new: make_prediction(cached_result, X_new)
+            cached_result["cached"] = True
+            return cached_result
+    
+    # No cache or cache disabled - train new models
+    if verbose:
+        print(f"[TRAINING] Training new models for {ticker}...")
+    
     stock_data = fetch_raw_stock_data(ticker, start_date, end_date)
     if stock_data is None:
         if verbose:
@@ -331,94 +337,103 @@ def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=F
     if verbose:
         print(f"Class weights: DOWN={class_weight_dict[0]:.3f}, UP={class_weight_dict[1]:.3f}\n")
 
-    # Direction models with class balancing
+    # =========================================================================
+    # CHANGED: Performance-Oriented Model Selection (The "Big Three")
+    # =========================================================================
     direction_models = {
+        # Logistic Regression: Kept as an Anchor (Baseline)
         "Logistic Regression": LogisticRegression(
             class_weight='balanced',
             max_iter=1000, 
             random_state=42
         ),
-        "Random Forest": RandomForestClassifier(
-            class_weight='balanced',
-            n_estimators=200, 
-            max_depth=10, 
-            min_samples_split=5, 
-            random_state=42
-        ),
-        "Gradient Boosting": GradientBoostingClassifier(
-            n_estimators=150, 
-            learning_rate=0.05, 
-            max_depth=5, 
-            random_state=42
-        ),
-        "HistGradient Boosting": HistGradientBoostingClassifier(
-            max_iter=150, 
-            learning_rate=0.05, 
-            max_depth=10, 
-            random_state=42
-        ),
+        
+        # XGBoost: Optimized for generalization (lower LR, higher estimators)
         "XGBoost": XGBClassifier(
-            n_estimators=150, 
-            learning_rate=0.05, 
-            max_depth=6,
+            n_estimators=300, 
+            learning_rate=0.03, 
+            max_depth=4, 
+            subsample=0.8, 
+            colsample_bytree=0.8,
             scale_pos_weight=class_weight_dict[1]/class_weight_dict[0],
+            eval_metric='logloss',
             random_state=42, 
-            eval_metric='logloss'
+            n_jobs=1
         ),
+        
+        # CatBoost: Optimized with Regularization (l2_leaf_reg=5)
         "CatBoost": CatBoostClassifier(
-            iterations=150, 
-            depth=8, 
-            learning_rate=0.05,
+            iterations=300, 
+            depth=6, 
+            learning_rate=0.03,
+            l2_leaf_reg=5,
             class_weights=class_weight_dict,
             verbose=False, 
-            random_state=42
+            random_state=42,
+            allow_writing_files=False
         ),
-        "MLP": MLPClassifier(
-            hidden_layer_sizes=(100, 50), 
-            max_iter=500, 
+        
+        # HistGradient: Replaces standard GradientBoosting (Faster, Better)
+        "HistGradient": HistGradientBoostingClassifier(
+            max_iter=300,
+            learning_rate=0.03,
+            max_depth=6,
+            l2_regularization=1.0,
             random_state=42
         )
     }
     
     if LIGHTGBM_AVAILABLE:
         direction_models["LightGBM"] = LGBMClassifier(
-            n_estimators=150, 
-            learning_rate=0.05, 
-            max_depth=8,
-            class_weight='balanced',
+            n_estimators=300, 
+            learning_rate=0.03, 
+            max_depth=5, 
+            class_weight='balanced', 
             random_state=42, 
-            verbose=-1
+            verbose=-1,
+            n_jobs=1
         )
 
-    # Magnitude models
+    # =========================================================================
+    # CHANGED: Performance-Oriented Magnitude Models
+    # =========================================================================
     magnitude_models = {
         "Ridge": Ridge(alpha=1.0, random_state=42),
-        "Random Forest": RandomForestRegressor(
-            n_estimators=200, max_depth=10, min_samples_split=5, random_state=42
-        ),
-        "Gradient Boosting": GradientBoostingRegressor(
-            n_estimators=150, learning_rate=0.05, max_depth=5, random_state=42
-        ),
-        "HistGradient Boosting": HistGradientBoostingRegressor(
-            max_iter=150, learning_rate=0.05, max_depth=10, random_state=42
-        ),
         "XGBoost": XGBRegressor(
-            n_estimators=150, learning_rate=0.05, max_depth=6,
-            objective="reg:squarederror", random_state=42
+            n_estimators=300, 
+            learning_rate=0.03, 
+            max_depth=4, 
+            subsample=0.8, 
+            objective="reg:squarederror", 
+            random_state=42,
+            n_jobs=1
         ),
         "CatBoost": CatBoostRegressor(
-            iterations=150, depth=8, learning_rate=0.05,
-            verbose=False, random_state=42
+            iterations=300, 
+            depth=6, 
+            learning_rate=0.03, 
+            l2_leaf_reg=5,
+            verbose=False, 
+            random_state=42,
+            allow_writing_files=False
         ),
-        "MLP": MLPRegressor(
-            hidden_layer_sizes=(100, 50), max_iter=500, random_state=42
+        "HistGradient": HistGradientBoostingRegressor(
+            max_iter=300,
+            learning_rate=0.03,
+            max_depth=6,
+            l2_regularization=1.0,
+            random_state=42
         )
     }
     
     if LIGHTGBM_AVAILABLE:
         magnitude_models["LightGBM"] = LGBMRegressor(
-            n_estimators=150, learning_rate=0.05, max_depth=8,
-            random_state=42, verbose=-1
+            n_estimators=300, 
+            learning_rate=0.03, 
+            max_depth=5, 
+            random_state=42, 
+            verbose=-1,
+            n_jobs=1
         )
 
     # Train direction models
@@ -427,9 +442,10 @@ def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=F
         print("TRAINING DIRECTION MODELS (Up/Down)")
         print("="*60)
     
-    n_jobs = min(len(direction_models), os.cpu_count() or 1)
+    # We enforce n_jobs=1 internally for models, but loop in parallel unless on limited env
+    n_jobs_parallel = -1 if not (os.environ.get('RENDER') or os.environ.get('CI')) else 1
     
-    dir_results = Parallel(n_jobs=n_jobs, backend='threading', verbose=0)(
+    dir_results = Parallel(n_jobs=n_jobs_parallel, backend='threading', verbose=0)(
         delayed(train_direction_model)(
             name, model, X_train, y_dir_train, X_val, y_dir_val, X_test, y_dir_test,
             StandardScaler() if name in MODELS_NEEDING_SCALING else None
@@ -463,7 +479,7 @@ def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=F
         print("TRAINING MAGNITUDE MODELS (% Change)")
         print("="*60)
     
-    mag_results = Parallel(n_jobs=n_jobs, backend='threading', verbose=0)(
+    mag_results = Parallel(n_jobs=n_jobs_parallel, backend='threading', verbose=0)(
         delayed(train_magnitude_model)(
             name, model, X_train, y_mag_train, X_val, y_mag_val, X_test, y_mag_test,
             StandardScaler() if name in MODELS_NEEDING_SCALING else None
@@ -501,8 +517,10 @@ def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=F
     best_mag_scaler = mag_scalers.get(best_mag_name, None)
 
     # Create ensembles
+    # CHANGED: Filter out "Logistic Regression" from the direction ensemble to avoid dilution
+    ensemble_candidates = [(name, metrics) for name, metrics in dir_report.items() if name != "Logistic Regression"]
     top_dir_models = sorted(
-        [(name, metrics) for name, metrics in dir_report.items()],
+        ensemble_candidates,
         key=lambda x: x[1]["validation"]["F1"],
         reverse=True
     )[:3]
@@ -517,9 +535,10 @@ def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=F
             "model_names": [name for name, _ in top_dir_models]
         }
     
+    # CHANGED: Filter out "Ridge" from the magnitude ensemble
+    mag_ensemble_candidates = [(name, metrics) for name, metrics in mag_report.items() if name != "Ridge"]
     top_mag_models = sorted(
-        [(name, metrics) for name, metrics in mag_report.items()
-         if metrics["validation"]["R²"] > 0],
+        [m for m in mag_ensemble_candidates if m[1]["validation"]["R²"] > 0],
         key=lambda x: x[1]["validation"]["R²"],
         reverse=True
     )[:3]
@@ -579,15 +598,22 @@ def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=F
         },
         "confidence": confidence,
         "ticker": ticker,
-        "latest_features": latest_features  # <--- ADDED: Today's features for predicting tomorrow
+        "latest_features": latest_features,
+        "cached": False  # Newly trained model
     }
     
-    # Add prediction function as a method
+    # Add prediction function
     def predict(X_new):
         """Make predictions on new data using trained models."""
         return make_prediction(result, X_new)
     
     result["predict"] = predict
+    
+    # Save to cache if enabled
+    if use_cache:
+        _model_cache.save(ticker, result)
+        if verbose:
+            print(f"[CACHE] ✓ Models trained and cached for {ticker}")
     
     # Optionally return test data for analysis
     if return_data:
@@ -599,3 +625,8 @@ def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=F
         }
     
     return result
+
+
+def get_model_cache():
+    """Get the global model cache instance for manual cache operations"""
+    return _model_cache
