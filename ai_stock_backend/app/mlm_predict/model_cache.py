@@ -18,8 +18,12 @@ class ModelCache:
         """
         Initialize model cache
         """
-        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        self.cache_dir = Path(base_dir) / cache_dir
+        # Ensure we find the root directory correctly regardless of where this is run
+        current_file = os.path.abspath(__file__)
+        app_dir = os.path.dirname(os.path.dirname(current_file)) # app/
+        backend_dir = os.path.dirname(app_dir) # ai_stock_backend/
+        
+        self.cache_dir = Path(backend_dir) / cache_dir
         
         self.cache_dir.mkdir(exist_ok=True)
         self.cache_duration = timedelta(days=cache_duration_days)
@@ -53,12 +57,6 @@ class ModelCache:
     def get(self, ticker: str) -> Optional[Dict[str, Any]]:
         """
         Retrieve cached model result if valid
-        
-        Args:
-            ticker: Stock ticker symbol
-            
-        Returns:
-            Cached model result dictionary or None if not found/expired
         """
         ticker = ticker.upper()
         cache_path = self._get_cache_path(ticker)
@@ -91,6 +89,7 @@ class ModelCache:
                 result = pickle.load(f)
             
             # Re-add the predict function (wasn't cached because it can't be pickled)
+            # Use dynamic import to avoid circular dependency
             from app.mlm_predict.train_model import make_prediction
             result["predict"] = lambda X_new: make_prediction(result, X_new)
             
@@ -103,10 +102,6 @@ class ModelCache:
     def save(self, ticker: str, result: Dict[str, Any]):
         """
         Save trained model result to cache
-        
-        Args:
-            ticker: Stock ticker symbol
-            result: The complete result dictionary from train_stock_models()
         """
         ticker = ticker.upper()
         cache_path = self._get_cache_path(ticker)
@@ -121,18 +116,36 @@ class ModelCache:
             with open(cache_path, 'wb') as f:
                 pickle.dump(result_to_cache, f)
             
+            # --- CRITICAL FIX: Handle Conditional Model Structure ---
+            # Old way: result['magnitude']['best_model_name'] (This key is gone now!)
+            # New way: Check if it's conditional, then log accordingly
+            
+            mag_model_name = "Unknown"
+            mag_data = result.get('magnitude', {})
+            
+            if mag_data.get('conditional'):
+                # It's our new conditional model
+                up_name = mag_data.get('up', {}).get('best_model_name', '?')
+                down_name = mag_data.get('down', {}).get('best_model_name', '?')
+                mag_model_name = f"Cond: {up_name}/{down_name}"
+            elif 'best_model_name' in mag_data:
+                # It's the old single model
+                mag_model_name = mag_data['best_model_name']
+                
             # Update metadata
             self.metadata[ticker] = {
                 'timestamp': datetime.now().isoformat(),
                 'confidence': result.get('confidence', 'unknown'),
                 'direction_model': result['direction']['best_model_name'],
-                'magnitude_model': result['magnitude']['best_model_name']
+                'magnitude_model': mag_model_name
             }
             self._save_metadata()
             
             print(f"[CACHE] ✓ Model cached for {ticker}")
         except Exception as e:
             print(f"[CACHE] Error saving model to cache: {e}")
+            import traceback
+            traceback.print_exc()
     
     def _invalidate(self, ticker: str):
         """Remove cache entry for a ticker"""
