@@ -81,11 +81,13 @@ def predict_ensemble_magnitude(X, ensemble_info):
 
 def make_prediction(result, X_new):
     """
-    Make a complete prediction using both direction and magnitude models.
+    Make a complete prediction using both direction and conditional magnitude models.
+    
+    CONDITIONAL MAGNITUDE: Uses separate UP and DOWN models for asymmetric volatility.
     
     Combines direction and magnitude intelligently:
     1. Get direction (UP/DOWN) with confidence
-    2. Get magnitude (absolute % change)
+    2. Route to appropriate magnitude model (UP or DOWN specialist)
     3. Apply direction sign to magnitude
     4. Scale by confidence (lower confidence = smaller predicted move)
     
@@ -99,6 +101,10 @@ def make_prediction(result, X_new):
     dir_info = result["direction"]
     mag_info = result["magnitude"]
     
+    # Ensure X_new is 2D
+    if len(X_new.shape) == 1:
+        X_new = X_new.reshape(1, -1)
+    
     # Get direction prediction and confidence
     if dir_info["ensemble"]:
         direction_pred, direction_prob = predict_ensemble_direction(X_new, dir_info["ensemble"])
@@ -110,12 +116,32 @@ def make_prediction(result, X_new):
         else:
             direction_prob = direction_pred
     
-    # Get magnitude prediction (absolute value)
-    if mag_info["ensemble"]:
-        magnitude_pred = predict_ensemble_magnitude(X_new, mag_info["ensemble"])
-    else:
-        X_proc = mag_info["scaler"].transform(X_new) if mag_info["scaler"] else X_new
-        magnitude_pred = mag_info["best_model"].predict(X_proc)
+    # CONDITIONAL MAGNITUDE PREDICTION (VECTORIZED)
+    # Split predictions by direction and route to appropriate specialist model
+    up_mask = (direction_pred == 1)
+    down_mask = (direction_pred == 0)
+    
+    magnitude_pred = np.zeros(len(direction_pred))
+    
+    # Process UP predictions
+    if up_mask.any():
+        X_up = X_new[up_mask]
+        
+        if mag_info["up"]["ensemble"]:
+            magnitude_pred[up_mask] = predict_ensemble_magnitude(X_up, mag_info["up"]["ensemble"])
+        else:
+            X_up_proc = mag_info["up"]["scaler"].transform(X_up) if mag_info["up"]["scaler"] else X_up
+            magnitude_pred[up_mask] = mag_info["up"]["best_model"].predict(X_up_proc)
+    
+    # Process DOWN predictions
+    if down_mask.any():
+        X_down = X_new[down_mask]
+        
+        if mag_info["down"]["ensemble"]:
+            magnitude_pred[down_mask] = predict_ensemble_magnitude(X_down, mag_info["down"]["ensemble"])
+        else:
+            X_down_proc = mag_info["down"]["scaler"].transform(X_down) if mag_info["down"]["scaler"] else X_down
+            magnitude_pred[down_mask] = mag_info["down"]["best_model"].predict(X_down_proc)
     
     # Ensure magnitude is positive
     magnitude_pred = np.abs(magnitude_pred)
@@ -143,8 +169,10 @@ def make_prediction(result, X_new):
             "confidence_score": float(confidence_score[0]),
             "using_ensemble": {
                 "direction": dir_info["ensemble"] is not None,
-                "magnitude": mag_info["ensemble"] is not None
-            }
+                "magnitude_up": mag_info["up"]["ensemble"] is not None,
+                "magnitude_down": mag_info["down"]["ensemble"] is not None
+            },
+            "magnitude_model_used": "UP" if direction_pred[0] == 1 else "DOWN"
         }
     else:
         return {
@@ -156,8 +184,10 @@ def make_prediction(result, X_new):
             "confidence_score": confidence_score.tolist(),
             "using_ensemble": {
                 "direction": dir_info["ensemble"] is not None,
-                "magnitude": mag_info["ensemble"] is not None
-            }
+                "magnitude_up": mag_info["up"]["ensemble"] is not None,
+                "magnitude_down": mag_info["down"]["ensemble"] is not None
+            },
+            "magnitude_model_used": ["UP" if d == 1 else "DOWN" for d in direction_pred]
         }
 
 
@@ -255,8 +285,7 @@ def train_magnitude_model(name, model, X_train, y_train, X_val, y_val, X_test, y
 
 def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=False, use_cache=True):
     """
-    Train dual prediction system: direction (up/down) and magnitude (% change).
-    Automatically handles caching - checks cache first, trains if needed, saves result.
+    Train dual prediction system with CONDITIONAL MAGNITUDE models.
     """
     ticker = ticker.upper()
     
@@ -264,13 +293,27 @@ def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=F
     if use_cache:
         cached_result = _model_cache.get(ticker)
         if cached_result is not None:
-            if verbose:
-                print(f"[CACHE] ✓ Using cached model for {ticker}")
-            
-            # Re-add the predict function
-            cached_result["predict"] = lambda X_new: make_prediction(cached_result, X_new)
-            cached_result["cached"] = True
-            return cached_result
+            # --- SELF-HEALING CHECK ---
+            # Check if this cache file is compatible with our new code
+            # It MUST have 'magnitude' -> 'up' structure
+            is_compatible = False
+            try:
+                if "magnitude" in cached_result and "up" in cached_result["magnitude"]:
+                    is_compatible = True
+            except Exception:
+                pass
+
+            if is_compatible:
+                if verbose:
+                    print(f"[CACHE] ✓ Using cached model for {ticker}")
+                
+                # Re-add the predict function
+                cached_result["predict"] = lambda X_new: make_prediction(cached_result, X_new)
+                cached_result["cached"] = True
+                return cached_result
+            else:
+                if verbose:
+                    print(f"[CACHE] ⚠ Found cache for {ticker} but it is incompatible (Old Version). Retraining...")
     
     # No cache or cache disabled - train new models
     if verbose:
@@ -342,31 +385,70 @@ def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=F
     y_mag_val = y_magnitude[train_end:val_end]
     y_mag_test = y_magnitude[val_end:]
 
+    # =========================================================================
+    # CONDITIONAL MAGNITUDE SPLIT: Separate UP and DOWN movements
+    # =========================================================================
+    
+    # Training set split
+    mask_up_train = (y_dir_train == 1)
+    mask_down_train = (y_dir_train == 0)
+    
+    X_train_up = X_train[mask_up_train]
+    y_mag_train_up = y_mag_train[mask_up_train]
+    
+    X_train_down = X_train[mask_down_train]
+    y_mag_train_down = y_mag_train[mask_down_train]
+    
+    # Validation set split
+    mask_up_val = (y_dir_val == 1)
+    mask_down_val = (y_dir_val == 0)
+    
+    X_val_up = X_val[mask_up_val]
+    y_mag_val_up = y_mag_val[mask_up_val]
+    
+    X_val_down = X_val[mask_down_val]
+    y_mag_val_down = y_mag_val[mask_down_val]
+    
+    # Test set split
+    mask_up_test = (y_dir_test == 1)
+    mask_down_test = (y_dir_test == 0)
+    
+    X_test_up = X_test[mask_up_test]
+    y_mag_test_up = y_mag_test[mask_up_test]
+    
+    X_test_down = X_test[mask_down_test]
+    y_mag_test_down = y_mag_test[mask_down_test]
+
     if verbose:
+        print(f"\n{'='*60}")
+        print("DATA SPLIT SUMMARY")
+        print("="*60)
         print(f"Training set: {len(X_train)} samples")
+        print(f"  └─ UP: {len(X_train_up)} samples ({len(X_train_up)/len(X_train)*100:.1f}%)")
+        print(f"  └─ DOWN: {len(X_train_down)} samples ({len(X_train_down)/len(X_train)*100:.1f}%)")
         print(f"Validation set: {len(X_val)} samples")
+        print(f"  └─ UP: {len(X_val_up)} samples ({len(X_val_up)/len(X_val)*100:.1f}%)")
+        print(f"  └─ DOWN: {len(X_val_down)} samples ({len(X_val_down)/len(X_val)*100:.1f}%)")
         print(f"Test set: {len(X_test)} samples")
-        print(f"Direction class balance (training): Up={sum(y_dir_train)}/{len(y_dir_train)} ({sum(y_dir_train)/len(y_dir_train)*100:.1f}%)\n")
+        print(f"  └─ UP: {len(X_test_up)} samples ({len(X_test_up)/len(X_test)*100:.1f}%)")
+        print(f"  └─ DOWN: {len(X_test_down)} samples ({len(X_test_down)/len(X_test)*100:.1f}%)")
 
     # Calculate class weights for balancing
     class_weights_array = compute_class_weight('balanced', classes=np.unique(y_dir_train), y=y_dir_train)
     class_weight_dict = {0: class_weights_array[0], 1: class_weights_array[1]}
     
     if verbose:
-        print(f"Class weights: DOWN={class_weight_dict[0]:.3f}, UP={class_weight_dict[1]:.3f}\n")
+        print(f"\nClass weights: DOWN={class_weight_dict[0]:.3f}, UP={class_weight_dict[1]:.3f}")
 
     # =========================================================================
-    # CHANGED: Performance-Oriented Model Selection (The "Big Three")
+    # DIRECTION MODELS (Unchanged)
     # =========================================================================
     direction_models = {
-        # Logistic Regression: Kept as an Anchor (Baseline)
         "Logistic Regression": LogisticRegression(
             class_weight='balanced',
             max_iter=1000, 
             random_state=42
         ),
-        
-        # XGBoost: Optimized for generalization (lower LR, higher estimators)
         "XGBoost": XGBClassifier(
             n_estimators=300, 
             learning_rate=0.03, 
@@ -378,8 +460,6 @@ def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=F
             random_state=42, 
             n_jobs=1
         ),
-        
-        # CatBoost: Optimized with Regularization (l2_leaf_reg=5)
         "CatBoost": CatBoostClassifier(
             iterations=300, 
             depth=6, 
@@ -390,8 +470,6 @@ def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=F
             random_state=42,
             allow_writing_files=False
         ),
-        
-        # HistGradient: Replaces standard GradientBoosting (Faster, Better)
         "HistGradient": HistGradientBoostingClassifier(
             max_iter=300,
             learning_rate=0.03,
@@ -413,54 +491,57 @@ def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=F
         )
 
     # =========================================================================
-    # CHANGED: Performance-Oriented Magnitude Models
+    # MAGNITUDE MODELS (Same architecture for both UP and DOWN)
     # =========================================================================
-    magnitude_models = {
-        "Ridge": Ridge(alpha=1.0, random_state=42),
-        "XGBoost": XGBRegressor(
-            n_estimators=300, 
-            learning_rate=0.03, 
-            max_depth=4, 
-            subsample=0.8, 
-            objective="reg:squarederror", 
-            random_state=42,
-            n_jobs=1
-        ),
-        "CatBoost": CatBoostRegressor(
-            iterations=300, 
-            depth=6, 
-            learning_rate=0.03, 
-            l2_leaf_reg=5,
-            verbose=False, 
-            random_state=42,
-            allow_writing_files=False
-        ),
-        "HistGradient": HistGradientBoostingRegressor(
-            max_iter=300,
-            learning_rate=0.03,
-            max_depth=6,
-            l2_regularization=1.0,
-            random_state=42
-        )
-    }
-    
-    if LIGHTGBM_AVAILABLE:
-        magnitude_models["LightGBM"] = LGBMRegressor(
-            n_estimators=300, 
-            learning_rate=0.03, 
-            max_depth=5, 
-            random_state=42, 
-            verbose=-1,
-            n_jobs=1
-        )
+    def get_magnitude_models():
+        """Factory function to create fresh model instances"""
+        models = {
+            "Ridge": Ridge(alpha=1.0, random_state=42),
+            "XGBoost": XGBRegressor(
+                n_estimators=300, 
+                learning_rate=0.03, 
+                max_depth=4, 
+                subsample=0.8, 
+                objective="reg:squarederror", 
+                random_state=42,
+                n_jobs=1
+            ),
+            "CatBoost": CatBoostRegressor(
+                iterations=300, 
+                depth=6, 
+                learning_rate=0.03, 
+                l2_leaf_reg=5,
+                verbose=False, 
+                random_state=42,
+                allow_writing_files=False
+            ),
+            "HistGradient": HistGradientBoostingRegressor(
+                max_iter=300,
+                learning_rate=0.03,
+                max_depth=6,
+                l2_regularization=1.0,
+                random_state=42
+            )
+        }
+        
+        if LIGHTGBM_AVAILABLE:
+            models["LightGBM"] = LGBMRegressor(
+                n_estimators=300, 
+                learning_rate=0.03, 
+                max_depth=5, 
+                random_state=42, 
+                verbose=-1,
+                n_jobs=1
+            )
+        
+        return models
 
     # Train direction models
     if verbose:
-        print("="*60)
+        print(f"\n{'='*60}")
         print("TRAINING DIRECTION MODELS (Up/Down)")
         print("="*60)
     
-    # We enforce n_jobs=1 internally for models, but loop in parallel unless on limited env
     n_jobs_parallel = -1 if not (os.environ.get('RENDER') or os.environ.get('CI')) else 1
     
     dir_results = Parallel(n_jobs=n_jobs_parallel, backend='threading', verbose=0)(
@@ -491,32 +572,40 @@ def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=F
                 f"Test Acc: {metrics['test']['Accuracy']:.4f}, F1: {metrics['test']['F1']:.4f}"
             )
 
-    # Train magnitude models
+    # =========================================================================
+    # TRAIN UP MAGNITUDE MODELS (Escalator Up Specialists)
+    # =========================================================================
     if verbose:
         print(f"\n{'='*60}")
-        print("TRAINING MAGNITUDE MODELS (% Change)")
+        print("TRAINING UP-MAGNITUDE MODELS (Escalator Up)")
+        print(f"Training on {len(X_train_up)} UP days")
         print("="*60)
     
-    mag_results = Parallel(n_jobs=n_jobs_parallel, backend='threading', verbose=0)(
+    magnitude_models_up = get_magnitude_models()
+    
+    mag_up_results = Parallel(n_jobs=n_jobs_parallel, backend='threading', verbose=0)(
         delayed(train_magnitude_model)(
-            name, model, X_train, y_mag_train, X_val, y_mag_val, X_test, y_mag_test,
+            name, model, 
+            X_train_up, y_mag_train_up,
+            X_val_up, y_mag_val_up,
+            X_test_up, y_mag_test_up,
             StandardScaler() if name in MODELS_NEEDING_SCALING else None
         )
-        for name, model in magnitude_models.items()
+        for name, model in magnitude_models_up.items()
     )
 
-    mag_report = {}
-    mag_trained_models = []
-    mag_scalers = {}
+    mag_up_report = {}
+    mag_up_trained_models = []
+    mag_up_scalers = {}
 
-    for name, model, metrics, scaler in mag_results:
+    for name, model, metrics, scaler in mag_up_results:
         if model is None or metrics is None:
             continue
             
-        mag_report[name] = metrics
-        mag_trained_models.append((name, model))
+        mag_up_report[name] = metrics
+        mag_up_trained_models.append((name, model))
         if scaler is not None:
-            mag_scalers[name] = scaler
+            mag_up_scalers[name] = scaler
         
         if verbose:
             print(
@@ -525,17 +614,72 @@ def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=F
                 f"Test R²: {metrics['test']['R²']:.4f}, MAE: {metrics['test']['MAE']:.3f}%"
             )
 
-    # Select best models
+    # =========================================================================
+    # TRAIN DOWN MAGNITUDE MODELS (Elevator Down Specialists)
+    # =========================================================================
+    if verbose:
+        print(f"\n{'='*60}")
+        print("TRAINING DOWN-MAGNITUDE MODELS (Elevator Down)")
+        print(f"Training on {len(X_train_down)} DOWN days")
+        print("="*60)
+    
+    magnitude_models_down = get_magnitude_models()
+    
+    mag_down_results = Parallel(n_jobs=n_jobs_parallel, backend='threading', verbose=0)(
+        delayed(train_magnitude_model)(
+            name, model,
+            X_train_down, y_mag_train_down,
+            X_val_down, y_mag_val_down,
+            X_test_down, y_mag_test_down,
+            StandardScaler() if name in MODELS_NEEDING_SCALING else None
+        )
+        for name, model in magnitude_models_down.items()
+    )
+
+    mag_down_report = {}
+    mag_down_trained_models = []
+    mag_down_scalers = {}
+
+    for name, model, metrics, scaler in mag_down_results:
+        if model is None or metrics is None:
+            continue
+            
+        mag_down_report[name] = metrics
+        mag_down_trained_models.append((name, model))
+        if scaler is not None:
+            mag_down_scalers[name] = scaler
+        
+        if verbose:
+            print(
+                f"{name:25} | "
+                f"Val R²: {metrics['validation']['R²']:.4f}, MAE: {metrics['validation']['MAE']:.3f}% | "
+                f"Test R²: {metrics['test']['R²']:.4f}, MAE: {metrics['test']['MAE']:.3f}%"
+            )
+
+    # =========================================================================
+    # SELECT BEST MODELS
+    # =========================================================================
+    
+    # Best direction model
     best_dir_name = max(dir_report, key=lambda x: dir_report[x]["validation"]["F1"])
     best_dir_model = next(m for n, m in dir_trained_models if n == best_dir_name)
     best_dir_scaler = dir_scalers.get(best_dir_name, None)
     
-    best_mag_name = max(mag_report, key=lambda x: mag_report[x]["validation"]["R²"])
-    best_mag_model = next(m for n, m in mag_trained_models if n == best_mag_name)
-    best_mag_scaler = mag_scalers.get(best_mag_name, None)
+    # Best UP magnitude model
+    best_mag_up_name = max(mag_up_report, key=lambda x: mag_up_report[x]["validation"]["R²"])
+    best_mag_up_model = next(m for n, m in mag_up_trained_models if n == best_mag_up_name)
+    best_mag_up_scaler = mag_up_scalers.get(best_mag_up_name, None)
+    
+    # Best DOWN magnitude model
+    best_mag_down_name = max(mag_down_report, key=lambda x: mag_down_report[x]["validation"]["R²"])
+    best_mag_down_model = next(m for n, m in mag_down_trained_models if n == best_mag_down_name)
+    best_mag_down_scaler = mag_down_scalers.get(best_mag_down_name, None)
 
-    # Create ensembles
-    # CHANGED: Filter out "Logistic Regression" from the direction ensemble to avoid dilution
+    # =========================================================================
+    # CREATE ENSEMBLES
+    # =========================================================================
+    
+    # Direction ensemble (exclude Logistic Regression)
     ensemble_candidates = [(name, metrics) for name, metrics in dir_report.items() if name != "Logistic Regression"]
     top_dir_models = sorted(
         ensemble_candidates,
@@ -553,31 +697,53 @@ def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=F
             "model_names": [name for name, _ in top_dir_models]
         }
     
-    # CHANGED: Filter out "Ridge" from the magnitude ensemble
-    mag_ensemble_candidates = [(name, metrics) for name, metrics in mag_report.items() if name != "Ridge"]
-    top_mag_models = sorted(
-        [m for m in mag_ensemble_candidates if m[1]["validation"]["R²"] > 0],
+    # UP magnitude ensemble (exclude Ridge)
+    mag_up_candidates = [(name, metrics) for name, metrics in mag_up_report.items() if name != "Ridge"]
+    top_mag_up = sorted(
+        [m for m in mag_up_candidates if m[1]["validation"]["R²"] > 0],
         key=lambda x: x[1]["validation"]["R²"],
         reverse=True
     )[:3]
     
-    mag_ensemble = None
-    if len(top_mag_models) > 1:
-        total_r2 = sum(m[1]["validation"]["R²"] for m in top_mag_models)
-        mag_ensemble = {
-            "models": [next(m for n, m in mag_trained_models if n == name) for name, _ in top_mag_models],
-            "weights": [m[1]["validation"]["R²"] / total_r2 for m in top_mag_models],
-            "scalers": [mag_scalers.get(name, None) for name, _ in top_mag_models],
-            "model_names": [name for name, _ in top_mag_models]
+    mag_up_ensemble = None
+    if len(top_mag_up) > 1:
+        total_r2 = sum(m[1]["validation"]["R²"] for m in top_mag_up)
+        mag_up_ensemble = {
+            "models": [next(m for n, m in mag_up_trained_models if n == name) for name, _ in top_mag_up],
+            "weights": [m[1]["validation"]["R²"] / total_r2 for m in top_mag_up],
+            "scalers": [mag_up_scalers.get(name, None) for name, _ in top_mag_up],
+            "model_names": [name for name, _ in top_mag_up]
+        }
+
+    # DOWN magnitude ensemble (exclude Ridge)
+    mag_down_candidates = [(name, metrics) for name, metrics in mag_down_report.items() if name != "Ridge"]
+    top_mag_down = sorted(
+        [m for m in mag_down_candidates if m[1]["validation"]["R²"] > 0],
+        key=lambda x: x[1]["validation"]["R²"],
+        reverse=True
+    )[:3]
+    
+    mag_down_ensemble = None
+    if len(top_mag_down) > 1:
+        total_r2 = sum(m[1]["validation"]["R²"] for m in top_mag_down)
+        mag_down_ensemble = {
+            "models": [next(m for n, m in mag_down_trained_models if n == name) for name, _ in top_mag_down],
+            "weights": [m[1]["validation"]["R²"] / total_r2 for m in top_mag_down],
+            "scalers": [mag_down_scalers.get(name, None) for name, _ in top_mag_down],
+            "model_names": [name for name, _ in top_mag_down]
         }
 
     # Determine confidence
     dir_f1 = dir_report[best_dir_name]["validation"]["F1"]
-    mag_r2 = mag_report[best_mag_name]["validation"]["R²"]
+    mag_up_r2 = mag_up_report[best_mag_up_name]["validation"]["R²"]
+    mag_down_r2 = mag_down_report[best_mag_down_name]["validation"]["R²"]
     
-    if dir_f1 > 0.6 and mag_r2 > 0.3:
+    # Average magnitude confidence
+    avg_mag_r2 = (mag_up_r2 + mag_down_r2) / 2
+    
+    if dir_f1 > 0.6 and avg_mag_r2 > 0.3:
         confidence = "high"
-    elif dir_f1 > 0.55 and mag_r2 > 0.15:
+    elif dir_f1 > 0.55 and avg_mag_r2 > 0.15:
         confidence = "medium"
     else:
         confidence = "low"
@@ -587,12 +753,13 @@ def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=F
         print("BEST MODELS SUMMARY")
         print("="*60)
         print(f"\nDirection Model: {best_dir_name}")
-        print(f"  Val - Accuracy: {dir_report[best_dir_name]['validation']['Accuracy']:.4f}, F1: {dir_report[best_dir_name]['validation']['F1']:.4f}")
-        print(f"  Test - Accuracy: {dir_report[best_dir_name]['test']['Accuracy']:.4f}, F1: {dir_report[best_dir_name]['test']['F1']:.4f}")
+        print(f"  Val F1: {dir_f1:.4f}")
         
-        print(f"\nMagnitude Model: {best_mag_name}")
-        print(f"  Val - R²: {mag_report[best_mag_name]['validation']['R²']:.4f}, MAE: {mag_report[best_mag_name]['validation']['MAE']:.3f}%")
-        print(f"  Test - R²: {mag_report[best_mag_name]['test']['R²']:.4f}, MAE: {mag_report[best_mag_name]['test']['MAE']:.3f}%")
+        print(f"\nUP Magnitude Model: {best_mag_up_name}")
+        print(f"  Val R²: {mag_up_r2:.4f}")
+        
+        print(f"\nDOWN Magnitude Model: {best_mag_down_name}")
+        print(f"  Val R²: {mag_down_r2:.4f}")
         
         print(f"\nOverall Confidence: {confidence.upper()}")
         print("="*60)
@@ -607,12 +774,23 @@ def train_stock_models(ticker, start_date, end_date, verbose=True, return_data=F
             "ensemble": dir_ensemble
         },
         "magnitude": {
-            "best_model": best_mag_model,
-            "best_model_name": best_mag_name,
-            "scaler": best_mag_scaler,
-            "metrics": mag_report[best_mag_name],
-            "report": mag_report,
-            "ensemble": mag_ensemble
+            "conditional": True,
+            "up": {
+                "best_model": best_mag_up_model,
+                "best_model_name": best_mag_up_name,
+                "scaler": best_mag_up_scaler,
+                "metrics": mag_up_report[best_mag_up_name],
+                "report": mag_up_report,
+                "ensemble": mag_up_ensemble
+            },
+            "down": {
+                "best_model": best_mag_down_model,
+                "best_model_name": best_mag_down_name,
+                "scaler": best_mag_down_scaler,
+                "metrics": mag_down_report[best_mag_down_name],
+                "report": mag_down_report,
+                "ensemble": mag_down_ensemble
+            }
         },
         "confidence": confidence,
         "ticker": ticker,

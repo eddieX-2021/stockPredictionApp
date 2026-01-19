@@ -22,6 +22,7 @@ To make predictions on new data:
     print(f"Raw Magnitude: {prediction['raw_magnitude_pct']:.2f}%")
     print(f"With Direction: {prediction['signed_magnitude_pct']:.2f}%")
     print(f"Confidence Score: {prediction['confidence_score']:.2%}")
+    print(f"Magnitude Model Used: {prediction['magnitude_model_used']}")  # "UP" or "DOWN"
 
 INTERPRETATION:
 ---------------
@@ -32,6 +33,15 @@ Prediction Fields:
   • signed_magnitude_pct: Move with direction applied (e.g., +1.5% or -1.5%)
   • final_prediction_pct: Confidence-scaled prediction (what to show users)
   • confidence_score: How much to trust this prediction (0-1)
+  • magnitude_model_used: Which specialist model made the prediction (UP or DOWN)
+
+CONDITIONAL MAGNITUDE MODELING:
+-------------------------------
+This system uses SEPARATE models for UP and DOWN movements to capture asymmetric volatility:
+  • UP Model: Trained only on days that went UP (escalator up - steady climb)
+  • DOWN Model: Trained only on days that went DOWN (elevator down - sharp drops)
+
+This captures market reality: stocks fall faster than they rise.
 
 How Confidence Scaling Works:
   • 50% direction confidence (coin flip) → 0% predicted change
@@ -40,7 +50,7 @@ How Confidence Scaling Works:
 
 Example:
   Direction: UP (0.85 confidence)
-  Raw Magnitude: 2.0%
+  Raw Magnitude: 2.0% (from UP specialist model)
   Confidence Score: 0.70  [calculated as: |0.85 - 0.5| * 2]
   Final Prediction: +1.4%  [calculated as: 2.0% * 0.70]
 
@@ -78,12 +88,15 @@ def test_single_ticker(ticker, start_date, end_date):
             "direction_f1": dir_info['metrics']['test']['F1'],
             "direction_precision": dir_info['metrics']['test']['Precision'],
             "direction_recall": dir_info['metrics']['test']['Recall'],
-            "magnitude_model": mag_info['best_model_name'],
-            "magnitude_r2": mag_info['metrics']['test']['R²'],
-            "magnitude_mae": mag_info['metrics']['test']['MAE'],
-            "magnitude_rmse": mag_info['metrics']['test']['RMSE'],
+            "magnitude_model_up": mag_info['up']['best_model_name'],
+            "magnitude_model_down": mag_info['down']['best_model_name'],
+            "magnitude_up_r2": mag_info['up']['metrics']['test']['R²'],
+            "magnitude_up_mae": mag_info['up']['metrics']['test']['MAE'],
+            "magnitude_down_r2": mag_info['down']['metrics']['test']['R²'],
+            "magnitude_down_mae": mag_info['down']['metrics']['test']['MAE'],
             "has_dir_ensemble": dir_info["ensemble"] is not None,
-            "has_mag_ensemble": mag_info["ensemble"] is not None
+            "has_mag_up_ensemble": mag_info["up"]["ensemble"] is not None,
+            "has_mag_down_ensemble": mag_info["down"]["ensemble"] is not None
         }
         
         return result, summary
@@ -99,7 +112,7 @@ def print_summary_table(summaries):
     df = pd.DataFrame(summaries)
     
     print("\n" + "="*100)
-    print("MULTI-TICKER SUMMARY")
+    print("MULTI-TICKER SUMMARY - CONDITIONAL MAGNITUDE MODELING")
     print("="*100)
     
     # Direction models summary
@@ -114,16 +127,27 @@ def print_summary_table(summaries):
               f"{row['direction_precision']:.4f}     {row['direction_recall']:.4f}   "
               f"{'Yes' if row['has_dir_ensemble'] else 'No':<10}")
     
-    # Magnitude models summary
-    print("\nMAGNITUDE MODELS:")
+    # UP Magnitude models summary
+    print("\nUP MAGNITUDE MODELS (Escalator Up - Steady Climb):")
     print("-" * 100)
-    print(f"{'Ticker':<8} {'Model':<20} {'R²':<10} {'MAE':<10} {'RMSE':<10} {'Ensemble':<10}")
+    print(f"{'Ticker':<8} {'Model':<20} {'R²':<10} {'MAE':<10} {'Ensemble':<10}")
     print("-" * 100)
     
     for _, row in df.iterrows():
-        print(f"{row['ticker']:<8} {row['magnitude_model']:<20} "
-              f"{row['magnitude_r2']:.4f}     {row['magnitude_mae']:.3f}%     "
-              f"{row['magnitude_rmse']:.3f}%     {'Yes' if row['has_mag_ensemble'] else 'No':<10}")
+        print(f"{row['ticker']:<8} {row['magnitude_model_up']:<20} "
+              f"{row['magnitude_up_r2']:.4f}     {row['magnitude_up_mae']:.3f}%     "
+              f"{'Yes' if row['has_mag_up_ensemble'] else 'No':<10}")
+    
+    # DOWN Magnitude models summary
+    print("\nDOWN MAGNITUDE MODELS (Elevator Down - Sharp Drops):")
+    print("-" * 100)
+    print(f"{'Ticker':<8} {'Model':<20} {'R²':<10} {'MAE':<10} {'Ensemble':<10}")
+    print("-" * 100)
+    
+    for _, row in df.iterrows():
+        print(f"{row['ticker']:<8} {row['magnitude_model_down']:<20} "
+              f"{row['magnitude_down_r2']:.4f}     {row['magnitude_down_mae']:.3f}%     "
+              f"{'Yes' if row['has_mag_down_ensemble'] else 'No':<10}")
     
     # Overall summary
     print("\nOVERALL CONFIDENCE:")
@@ -135,7 +159,8 @@ def print_summary_table(summaries):
         notes = []
         if row['direction_accuracy'] > 0.55:
             notes.append("Good direction")
-        if row['magnitude_r2'] > 0.1:
+        avg_mag_r2 = (row['magnitude_up_r2'] + row['magnitude_down_r2']) / 2
+        if avg_mag_r2 > 0.1:
             notes.append("Good magnitude")
         if not notes:
             notes.append("Weak signals")
@@ -148,17 +173,21 @@ def print_summary_table(summaries):
     print("-" * 100)
     print(f"Average Direction Accuracy: {df['direction_accuracy'].mean():.4f}")
     print(f"Average Direction F1:       {df['direction_f1'].mean():.4f}")
-    print(f"Average Magnitude R²:       {df['magnitude_r2'].mean():.4f}")
-    print(f"Average Magnitude MAE:      {df['magnitude_mae'].mean():.3f}%")
+    print(f"\nAverage UP Magnitude R²:    {df['magnitude_up_r2'].mean():.4f}")
+    print(f"Average UP Magnitude MAE:   {df['magnitude_up_mae'].mean():.3f}%")
+    print(f"\nAverage DOWN Magnitude R²:  {df['magnitude_down_r2'].mean():.4f}")
+    print(f"Average DOWN Magnitude MAE: {df['magnitude_down_mae'].mean():.3f}%")
     print(f"\nHigh Confidence Count:   {(df['confidence'] == 'high').sum()}/{len(df)}")
     print(f"Medium Confidence Count: {(df['confidence'] == 'medium').sum()}/{len(df)}")
     print(f"Low Confidence Count:    {(df['confidence'] == 'low').sum()}/{len(df)}")
     
     print("\n" + "="*100)
-    print("PREDICTION METHODOLOGY:")
+    print("PREDICTION METHODOLOGY - CONDITIONAL MAGNITUDE:")
     print("-" * 100)
-    print("✓ Magnitude models trained on ABSOLUTE values (no directional bias)")
-    print("✓ Direction applied separately: UP (+) or DOWN (-)")
+    print("✓ UP Model: Trained ONLY on days that moved UP (captures gradual climbs)")
+    print("✓ DOWN Model: Trained ONLY on days that moved DOWN (captures sharp drops)")
+    print("✓ Direction model routes prediction to appropriate specialist")
+    print("✓ Captures asymmetric volatility: markets fall faster than they rise")
     print("✓ Predictions scaled by confidence: Low confidence → smaller moves")
     print("✓ Final prediction = |magnitude| × direction × confidence_scaling")
     print("="*100)
@@ -172,7 +201,7 @@ if __name__ == "__main__":
     start = end - timedelta(days=365 * 6)
     
     print("="*70)
-    print("STOCK PREDICTION MODEL TESTING")
+    print("STOCK PREDICTION MODEL TESTING - CONDITIONAL MAGNITUDE")
     print("="*70)
     print(f"Date Range: {start.strftime('%Y-%m-%d')} to {end.strftime('%Y-%m-%d')}")
     print(f"Tickers: {', '.join(TICKERS)}")

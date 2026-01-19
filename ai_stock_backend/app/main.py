@@ -149,26 +149,23 @@ def main():
     end_date = (datetime.now(eastern) - timedelta(days=1)).strftime("%Y-%m-%d")
     start_date = (
         datetime.strptime(end_date, "%Y-%m-%d")
-        - timedelta(days=90)
+        - timedelta(days=365*5)
     ).strftime("%Y-%m-%d")
     ticker = "AAPL"
 
-    stock_data = fetch_raw_stock_data(ticker, start_date, end_date)
-    if stock_data is None:
-        print(f"Failed to fetch data for {ticker}")
+    # Train models
+    result = train_stock_models(ticker, start_date, end_date, verbose=True, use_cache=False)
+    
+    if result is None:
+        print(f"Failed to train models for {ticker}")
         return
 
-    X, y, _ = generate_features(stock_data)
-    if X is None or y is None:
-        print(f"Failed to generate features for {ticker}")
-        return
-
-    best_model, scaler = train_stock_models(ticker, start_date, end_date)
-    if best_model is None or scaler is None:
-        print(f"Failed to train model for {ticker}")
-        return
-
-    print(f"Trained model for {ticker}, ready for prediction via /predict endpoint")
+    print(f"\n✅ Trained models for {ticker}:")
+    print(f"   Direction: {result['direction']['best_model_name']}")
+    print(f"   Magnitude UP: {result['magnitude']['up']['best_model_name']}")
+    print(f"   Magnitude DOWN: {result['magnitude']['down']['best_model_name']}")
+    print(f"   Confidence: {result['confidence'].upper()}")
+    print(f"   Ready for prediction via /predict endpoint")
 
 
 if __name__ == "__main__":

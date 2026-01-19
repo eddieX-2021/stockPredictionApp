@@ -77,7 +77,9 @@ async def predict(stock: str = Query(..., description="Stock ticker symbol (e.g.
         "system_confidence": result["confidence"],  # "high", "medium", or "low"
         "model_info": {
             "direction_model": result["direction"]["best_model_name"],
-            "magnitude_model": result["magnitude"]["best_model_name"],
+            "magnitude_model_up": result["magnitude"]["up"]["best_model_name"],
+            "magnitude_model_down": result["magnitude"]["down"]["best_model_name"],
+            "magnitude_model_used": prediction["magnitude_model_used"],  # Which one was actually used
             "cached": result["cached"]
         }
     }

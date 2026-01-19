@@ -23,7 +23,10 @@ type PredictionData = {
   system_confidence: string;
   model_info: {
     direction_model: string;
-    magnitude_model: string;
+    magnitude_model_up: string;
+    magnitude_model_down: string;
+    magnitude_model_used: string;
+    cached: boolean;
   };
 };
 
@@ -202,8 +205,13 @@ export default function StockPage() {
       const res = { positive: 0, negative: 0, neutral: 0, total: 0 };
       for (const it of items) {
         const k = normalizeSentiment(it.sentiment) as "positive" | "negative" | "neutral";
-        res[k] += 1;
-        res.total += 1;
+        if (res[k] !== undefined) {
+            res[k] += 1;
+            res.total += 1;
+        } else {
+            res.neutral += 1; // Fallback
+            res.total += 1;
+        }
       }
       return res;
     };
@@ -233,7 +241,7 @@ export default function StockPage() {
   const dir = prediction?.direction?.toUpperCase() ?? "—";
   const changePct = prediction?.predicted_change_pct ?? NaN;
 
-  // ✅ your backend returns "prev", not "previous" :contentReference[oaicite:4]{index=4}
+  // ✅ your backend returns "prev", not "previous"
   const latestObj = (financials as any)?.latest;
   const prevObj = (financials as any)?.prev;
 
@@ -303,7 +311,15 @@ export default function StockPage() {
           <StatCard
             title="Confidence"
             value={prediction ? `${(prediction.confidence * 100).toFixed(1)}%` : "—"}
-            subvalue={prediction ? `Models: ${prediction.model_info.direction_model} + ${prediction.model_info.magnitude_model}` : "—"}
+            subvalue={
+              prediction
+                ? `Dir: ${prediction.model_info.direction_model} | Mag: ${prediction.model_info.magnitude_model_used} (${
+                    prediction.model_info.magnitude_model_used === "UP"
+                      ? prediction.model_info.magnitude_model_up
+                      : prediction.model_info.magnitude_model_down
+                  })`
+                : "—"
+            }
           />
         </section>
 
