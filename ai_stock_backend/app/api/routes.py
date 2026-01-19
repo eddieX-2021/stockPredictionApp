@@ -42,12 +42,18 @@ async def predict(stock: str = Query(..., description="Stock ticker symbol (e.g.
     
     # Fetch current price
     try:
-        price_start = (datetime.strptime(end_date, "%Y-%m-%d") - timedelta(days=90)).strftime("%Y-%m-%d")
-        stock_data = fetch_raw_stock_data(ticker, price_start, end_date)
-        if stock_data is None or stock_data.empty:
-            raise ValueError("No stock data available")
-        current_price = float(stock_data['Close'].iloc[-1])
+        import yfinance as yf
+        # Request last 5 days to ensure we catch the latest trading day (handles weekends/holidays)
+        recent_data = yf.Ticker(ticker).history(period="5d")
+        
+        if recent_data is None or recent_data.empty:
+             raise ValueError("No recent stock data found from Yahoo Finance")
+             
+        # Take the absolute latest closing price available
+        current_price = float(recent_data['Close'].iloc[-1])
+        
     except Exception as e:
+        print(f"Error fetching price for {ticker}: {e}") # Log it for server logs
         raise HTTPException(
             status_code=500,
             detail=f"Failed to fetch current price for {ticker}: {str(e)}"
