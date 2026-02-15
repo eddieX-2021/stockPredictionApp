@@ -1,62 +1,62 @@
 {
   "AAPL": {
-    "timestamp": "2026-02-08T04:37:25.387329",
+    "timestamp": "2026-02-15T04:27:28.940621",
     "confidence": "low",
-    "direction_model": "CatBoost",
-    "magnitude_model": "Cond: Ridge/XGBoost"
+    "direction_model": "HistGradient",
+    "magnitude_model": "Cond: Ridge/CatBoost"
   },
   "MSFT": {
-    "timestamp": "2026-02-08T04:37:38.980592",
+    "timestamp": "2026-02-15T04:27:42.433907",
     "confidence": "low",
     "direction_model": "CatBoost",
     "magnitude_model": "Cond: CatBoost/CatBoost"
   },
   "NVDA": {
-    "timestamp": "2026-02-08T04:37:51.620563",
+    "timestamp": "2026-02-15T04:27:58.393937",
     "confidence": "low",
-    "direction_model": "XGBoost",
-    "magnitude_model": "Cond: HistGradient/HistGradient"
+    "direction_model": "CatBoost",
+    "magnitude_model": "Cond: HistGradient/CatBoost"
   },
   "AMZN": {
-    "timestamp": "2026-02-08T04:38:05.299251",
+    "timestamp": "2026-02-15T04:28:13.211262",
     "confidence": "low",
-    "direction_model": "XGBoost",
+    "direction_model": "HistGradient",
     "magnitude_model": "Cond: CatBoost/CatBoost"
   },
   "GOOGL": {
-    "timestamp": "2026-02-08T04:38:18.941576",
+    "timestamp": "2026-02-15T04:28:26.499761",
     "confidence": "low",
-    "direction_model": "XGBoost",
+    "direction_model": "HistGradient",
     "magnitude_model": "Cond: CatBoost/HistGradient"
   },
   "META": {
-    "timestamp": "2026-02-08T04:38:32.466278",
+    "timestamp": "2026-02-15T04:28:39.139012",
     "confidence": "low",
-    "direction_model": "XGBoost",
+    "direction_model": "HistGradient",
     "magnitude_model": "Cond: CatBoost/CatBoost"
   },
   "TSLA": {
-    "timestamp": "2026-02-08T04:38:46.479806",
+    "timestamp": "2026-02-15T04:28:51.831447",
     "confidence": "low",
     "direction_model": "HistGradient",
-    "magnitude_model": "Cond: CatBoost/CatBoost"
-  },
-  "AMD": {
-    "timestamp": "2026-02-08T04:39:01.905589",
-    "confidence": "low",
-    "direction_model": "XGBoost",
     "magnitude_model": "Cond: CatBoost/HistGradient"
   },
-  "SPY": {
-    "timestamp": "2026-02-08T04:39:16.901384",
-    "confidence": "low",
-    "direction_model": "HistGradient",
-    "magnitude_model": "Cond: HistGradient/Ridge"
-  },
-  "QQQ": {
-    "timestamp": "2026-02-08T04:39:31.166667",
+  "AMD": {
+    "timestamp": "2026-02-15T04:29:06.779002",
     "confidence": "low",
     "direction_model": "XGBoost",
     "magnitude_model": "Cond: CatBoost/CatBoost"
+  },
+  "SPY": {
+    "timestamp": "2026-02-15T04:29:19.815720",
+    "confidence": "low",
+    "direction_model": "HistGradient",
+    "magnitude_model": "Cond: XGBoost/XGBoost"
+  },
+  "QQQ": {
+    "timestamp": "2026-02-15T04:29:35.147967",
+    "confidence": "low",
+    "direction_model": "HistGradient",
+    "magnitude_model": "Cond: CatBoost/XGBoost"
   }
 }
