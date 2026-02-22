@@ -1,62 +1,62 @@
 {
   "AAPL": {
-    "timestamp": "2026-02-15T04:27:28.940621",
-    "confidence": "low",
+    "timestamp": "2026-02-22T04:23:34.393958",
+    "confidence": "medium",
     "direction_model": "HistGradient",
-    "magnitude_model": "Cond: Ridge/CatBoost"
+    "magnitude_model": "Cond: Ridge/XGBoost"
   },
   "MSFT": {
-    "timestamp": "2026-02-15T04:27:42.433907",
-    "confidence": "low",
-    "direction_model": "CatBoost",
-    "magnitude_model": "Cond: CatBoost/CatBoost"
-  },
-  "NVDA": {
-    "timestamp": "2026-02-15T04:27:58.393937",
-    "confidence": "low",
-    "direction_model": "CatBoost",
-    "magnitude_model": "Cond: HistGradient/CatBoost"
-  },
-  "AMZN": {
-    "timestamp": "2026-02-15T04:28:13.211262",
-    "confidence": "low",
-    "direction_model": "HistGradient",
-    "magnitude_model": "Cond: CatBoost/CatBoost"
-  },
-  "GOOGL": {
-    "timestamp": "2026-02-15T04:28:26.499761",
-    "confidence": "low",
-    "direction_model": "HistGradient",
-    "magnitude_model": "Cond: CatBoost/HistGradient"
-  },
-  "META": {
-    "timestamp": "2026-02-15T04:28:39.139012",
-    "confidence": "low",
-    "direction_model": "HistGradient",
-    "magnitude_model": "Cond: CatBoost/CatBoost"
-  },
-  "TSLA": {
-    "timestamp": "2026-02-15T04:28:51.831447",
-    "confidence": "low",
-    "direction_model": "HistGradient",
-    "magnitude_model": "Cond: CatBoost/HistGradient"
-  },
-  "AMD": {
-    "timestamp": "2026-02-15T04:29:06.779002",
+    "timestamp": "2026-02-22T04:23:48.689080",
     "confidence": "low",
     "direction_model": "XGBoost",
     "magnitude_model": "Cond: CatBoost/CatBoost"
   },
+  "NVDA": {
+    "timestamp": "2026-02-22T04:24:01.539085",
+    "confidence": "low",
+    "direction_model": "Logistic Regression",
+    "magnitude_model": "Cond: HistGradient/CatBoost"
+  },
+  "AMZN": {
+    "timestamp": "2026-02-22T04:24:14.150094",
+    "confidence": "low",
+    "direction_model": "XGBoost",
+    "magnitude_model": "Cond: CatBoost/CatBoost"
+  },
+  "GOOGL": {
+    "timestamp": "2026-02-22T04:24:26.610389",
+    "confidence": "low",
+    "direction_model": "XGBoost",
+    "magnitude_model": "Cond: CatBoost/HistGradient"
+  },
+  "META": {
+    "timestamp": "2026-02-22T04:24:40.847226",
+    "confidence": "low",
+    "direction_model": "CatBoost",
+    "magnitude_model": "Cond: CatBoost/CatBoost"
+  },
+  "TSLA": {
+    "timestamp": "2026-02-22T04:24:54.981211",
+    "confidence": "low",
+    "direction_model": "HistGradient",
+    "magnitude_model": "Cond: CatBoost/CatBoost"
+  },
+  "AMD": {
+    "timestamp": "2026-02-22T04:25:09.581900",
+    "confidence": "low",
+    "direction_model": "XGBoost",
+    "magnitude_model": "Cond: CatBoost/XGBoost"
+  },
   "SPY": {
-    "timestamp": "2026-02-15T04:29:19.815720",
+    "timestamp": "2026-02-22T04:25:22.414759",
     "confidence": "low",
     "direction_model": "HistGradient",
     "magnitude_model": "Cond: XGBoost/XGBoost"
   },
   "QQQ": {
-    "timestamp": "2026-02-15T04:29:35.147967",
+    "timestamp": "2026-02-22T04:25:36.409034",
     "confidence": "low",
     "direction_model": "HistGradient",
-    "magnitude_model": "Cond: CatBoost/XGBoost"
+    "magnitude_model": "Cond: Ridge/CatBoost"
   }
 }
