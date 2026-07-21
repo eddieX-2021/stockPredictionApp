@@ -5,6 +5,7 @@ import { useCombobox, type UseComboboxStateChange } from "downshift";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import { useDebounce } from "use-debounce";
+import { ThemeToggle } from "./components/ui/ThemeToggle";
 
 interface Stock {
   symbol: string;
@@ -163,44 +164,47 @@ export default function Home() {
           <div className="absolute inset-0 bg-gradient-to-b from-black/70 via-black/55 to-bg" />
         </div>
 
-        <div className="mx-auto max-w-6xl px-6 pt-20 pb-16">
+        <div className="mx-auto max-w-6xl px-6 pt-6 pb-16">
+          <div className="mb-12 flex justify-end">
+            <ThemeToggle />
+          </div>
           <div className="max-w-2xl">
             <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-sm text-white/85">
               <span className="h-2 w-2 rounded-full bg-emerald-400" />
-              Market signals • News + Reddit • Financials
+              Price research - Financials - Risk
             </div>
 
             <h1 className="mt-5 text-4xl font-semibold tracking-tight text-white sm:text-5xl">
-              Your Personal Revenue Driver
-              <span className="block text-white/80">Fast to search. Easy to read.</span>
+              Equity Research Workbench
+              <span className="block text-white/80">Company context, financials, risk, and signals.</span>
             </h1>
 
             <p className="mt-4 text-base leading-relaxed text-white/80">
-              We estimate next-step price movement using historical price patterns (Yahoo),
-              sentiment from financial news + Reddit, and fundamentals from financial reports.
-              This is a decision-support tool—always validate with your own research.
+              Research a ticker with organized price history, financial performance, earnings context,
+              risk indicators, news sentiment, and the existing experimental quantitative signal.
+              This is a decision-support tool for education, not financial advice.
             </p>
 
             {/* Search */}
             <div className="mt-8">
-              <div className="rounded-2xl border border-white/15 bg-white/10 p-4 backdrop-blur">
+              <div className="rounded-lg border border-white/15 bg-white/10 p-4 backdrop-blur">
                 <div className="mb-2 text-sm font-medium text-white/80">
-                  Search a stock to generate the dashboard
+                  Search a stock to open the analysis dashboard
                 </div>
 
                 <div className="relative">
                   <input
                     {...getInputProps({
                       onKeyDown: handleKeyDown,
-                      placeholder: "Search a ticker (AAPL) or company name (Apple)…",
+                      placeholder: "Search a ticker (AAPL) or company name (Apple)...",
                       className:
-                        "w-full rounded-xl border border-white/15 bg-white/10 px-4 py-3 text-base text-white placeholder:text-white/60 outline-none backdrop-blur focus:ring-2 focus:ring-white/40",
+                        "w-full rounded-md border border-white/15 bg-white/10 px-4 py-3 text-base text-white placeholder:text-white/60 outline-none backdrop-blur focus:ring-2 focus:ring-white/40",
                     })}
                   />
 
                   <ul
                     {...getMenuProps()}
-                    className={`absolute z-10 mt-2 w-full overflow-hidden rounded-xl border border-white/10 bg-white shadow-2xl ${
+                    className={`absolute z-10 mt-2 w-full overflow-hidden rounded-md border border-border bg-card text-foreground shadow-2xl ${
                       isOpen && suggestions.length > 0 ? "" : "hidden"
                     }`}
                   >
@@ -210,7 +214,7 @@ export default function Home() {
                           key={`${item.symbol}-${index}`}
                           {...getItemProps({ item, index })}
                           className={`cursor-pointer px-3 py-2.5 ${
-                            highlightedIndex === index ? "bg-black/5" : ""
+                            highlightedIndex === index ? "bg-subtle" : ""
                           }`}
                         >
                           <div className="flex items-center justify-between">
@@ -239,22 +243,22 @@ export default function Home() {
             </div>
 
             <div className="mt-10 grid gap-4 sm:grid-cols-3">
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-white/85">
+              <div className="rounded-lg border border-white/10 bg-white/5 p-4 text-white/85">
                 <div className="text-sm font-semibold">Historical signals</div>
                 <div className="mt-1 text-sm text-white/70">
                   Price/volume patterns from Yahoo market history.
                 </div>
               </div>
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-white/85">
-                <div className="text-sm font-semibold">News + Reddit sentiment</div>
+              <div className="rounded-lg border border-white/10 bg-white/5 p-4 text-white/85">
+                <div className="text-sm font-semibold">News sentiment</div>
                 <div className="mt-1 text-sm text-white/70">
-                  Headlines + posts classified to measure market tone.
+                  Headlines classified to measure market tone.
                 </div>
               </div>
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-white/85">
+              <div className="rounded-lg border border-white/10 bg-white/5 p-4 text-white/85">
                 <div className="text-sm font-semibold">Fundamentals</div>
                 <div className="mt-1 text-sm text-white/70">
-                  Financial reports used to weight the prediction context.
+                  Financial reports used to score business quality and valuation context.
                 </div>
               </div>
             </div>
@@ -265,7 +269,7 @@ export default function Home() {
             <div className="flex h-10 w-6 items-start justify-center rounded-full border border-white/20 p-1">
               <div className="h-2 w-2 animate-bounce rounded-full bg-white/70" />
             </div>
-            <span className="text-sm">Scroll to learn how it works</span>
+            <span className="text-sm">Review the dashboard workflow</span>
           </div>
         </div>
       </section>
@@ -275,13 +279,13 @@ export default function Home() {
         <div className="grid gap-10 lg:grid-cols-2 lg:items-center">
           <div>
             <h2 className="text-3xl font-semibold tracking-tight">
-              How the prediction is made
+              How the analysis is built
             </h2>
             <p className="mt-3 leading-relaxed text-muted-foreground">
               We combine three signal groups:
               <span className="font-medium text-foreground"> historical price behavior</span>{" "}
               (Yahoo), <span className="font-medium text-foreground">market narrative</span>{" "}
-              (news + Reddit sentiment), and{" "}
+              (news sentiment), and{" "}
               <span className="font-medium text-foreground">company fundamentals</span>{" "}
               (financial reports). The dashboard prioritizes the most useful numbers so you can
               decide quickly.
@@ -289,7 +293,7 @@ export default function Home() {
 
             <ol className="mt-6 space-y-3">
               <li className="flex gap-3">
-                <span className="mt-0.5 inline-flex h-6 w-6 items-center justify-center rounded-full bg-black text-xs text-white">
+                <span className="mt-0.5 inline-flex h-6 w-6 items-center justify-center rounded-full bg-foreground text-xs text-bg">
                   1
                 </span>
                 <div>
@@ -300,38 +304,38 @@ export default function Home() {
                 </div>
               </li>
               <li className="flex gap-3">
-                <span className="mt-0.5 inline-flex h-6 w-6 items-center justify-center rounded-full bg-black text-xs text-white">
+                <span className="mt-0.5 inline-flex h-6 w-6 items-center justify-center rounded-full bg-foreground text-xs text-bg">
                   2
                 </span>
                 <div>
                   <div className="font-medium">Score sentiment</div>
                   <div className="text-sm text-muted-foreground">
-                    News + Reddit sentiment estimates short-term market tone.
+                    News sentiment estimates short-term market tone.
                   </div>
                 </div>
               </li>
               <li className="flex gap-3">
-                <span className="mt-0.5 inline-flex h-6 w-6 items-center justify-center rounded-full bg-black text-xs text-white">
+                <span className="mt-0.5 inline-flex h-6 w-6 items-center justify-center rounded-full bg-foreground text-xs text-bg">
                   3
                 </span>
                 <div>
                   <div className="font-medium">Blend with fundamentals</div>
                   <div className="text-sm text-muted-foreground">
-                    Financials help avoid &quot;hype-only&quot; predictions.
+                    Financials help separate business quality from short-term hype.
                   </div>
                 </div>
               </li>
             </ol>
           </div>
 
-          <div className="overflow-hidden rounded-2xl border border-border bg-card">
+          <div className="overflow-hidden rounded-lg border border-border bg-card">
             {/* Image */}
             <div className="relative aspect-[16/10]">
               <Image
                 src="/eg.png"
                 alt="Dashboard snapshot"
                 fill
-                className="object-contain bg-white"
+                className="object-contain bg-card"
                 priority
               />
             </div>
@@ -340,7 +344,7 @@ export default function Home() {
             <div className="p-5">
               <div className="text-lg font-semibold">Dashboard snapshot</div>
               <p className="mt-1 text-sm text-muted-foreground leading-relaxed">
-                Example view of the prediction dashboard, highlighting key metrics,
+                Example view of the analysis dashboard, highlighting key metrics,
                 confidence, and sentiment breakdown.
               </p>
             </div>
@@ -348,10 +352,10 @@ export default function Home() {
 
         </div>
 
-        <div className="mt-12 rounded-2xl border border-border bg-card p-6">
+        <div className="mt-12 rounded-lg border border-border bg-card p-6">
           <div className="font-medium">Disclaimer</div>
           <p className="mt-2 leading-relaxed text-sm text-muted-foreground">
-            Predictions can be wrong. This app is for educational and informational purposes,
+            Scores and estimates can be wrong. This app is for educational and informational purposes,
             not financial advice.
           </p>
         </div>
@@ -359,3 +363,4 @@ export default function Home() {
     </main>
   );
 }
+

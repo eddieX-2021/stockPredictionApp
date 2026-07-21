@@ -1,132 +1,156 @@
-# stockPredictionApp(1.2.0)
+# Stock Prediction App
 
+A full-stack stock research dashboard built with FastAPI and Next.js. The app is being repositioned from a pure stock-price prediction demo into a Phase 1 equity research workbench that organizes price data, fundamentals, earnings context, risk indicators, news sentiment, and the existing prediction model in one place.
 
-A full-stack, machine learning–powered web application that forecasts stock price movements by combining historical data, financial sentiment analysis, and news headlines. Built with a Python/FastAPI backend and a Next.js frontend, the app delivers real-time predictions and sentiment insights to help users make data-driven investment decisions.
+The prediction model is experimental and is shown as one quantitative signal. This project is for educational and research purposes only and does not provide financial advice.
 
-https://stock-prediction-app-two.vercel.app/ 
+## Problem Being Solved
 
----
+Individual investors often have to jump between several sites to compare price performance, business fundamentals, earnings, risk, and model-driven signals. This app brings those research inputs into a cleaner dashboard while preserving the original stock prediction work.
 
-## Table of Contents
+## Current Phase 1 Features
 
-1. [Getting Started](#getting-started)  
-2. [Project Overview](#project-overview)  
-3. [Backend Features](#backend-features)  
-4. [Frontend Features](#frontend-features)  
-5. [Tech Stack](#tech-stack)  
-6. [Future Improvements](#future-improvements)  
-7. [Credits](#credits)  
+- Ticker search with suggestions through the Next.js API route and Finnhub when configured.
+- Company overview with ticker, sector, industry, market cap, price, and update time when available.
+- Rule-based research snapshot using existing price, financial, valuation, liquidity, news, and risk data.
+- Historical price-performance ranges with a lightweight chart and moving-average context.
+- Financial-performance table with revenue, EPS, net income, cash flow, cash, and debt fields when available.
+- Earnings section for EPS, revenue, dates, and explicit unavailable states for unsupported surprise data.
+- Risk indicators based on volatility, drawdown, beta, balance-sheet strength, and reported fundamentals.
+- Existing prediction model preserved as an experimental quantitative signal.
+- News sentiment preserved as an optional supporting signal.
+- Reddit sentiment is disabled/omitted because live Reddit access is unreliable under token/rate limits.
+- Disabled Phase 2 AI entry points are visible but do not call an AI API.
+- Light/dark theme support with a user toggle and system-default behavior.
+- Free external links to Yahoo Finance and SEC filing search for deeper research.
 
----
+## Simple Architecture Overview
 
-## Getting Started
+- `next-app/` contains the Next.js frontend and ticker search API route.
+- `ai_stock_backend/` contains the FastAPI backend, analysis aggregation, model code, data fetchers, and local caches.
+- The frontend calls the backend `/analysis?stock=SYMBOL` endpoint for the dashboard.
+- The backend builds a structured response from price history, yfinance profile/financial data, optional news sentiment, existing model output, and deterministic calculations.
 
-### 1. Clone the repository
+## Technology Stack
+
+- Frontend: Next.js, React, TypeScript, Tailwind CSS
+- Backend: Python, FastAPI, Uvicorn
+- Data and ML: yfinance, pandas, NumPy, scikit-learn, XGBoost/CatBoost where available in the existing model code
+- Storage: local model cache and SQLite analysis cache already present in the project
+
+## Data Flow
+
+1. User enters a ticker on the homepage.
+2. The stock route requests `/analysis?stock=SYMBOL` from the FastAPI backend.
+3. Backend normalizes the ticker and attempts optional data sections independently.
+4. Available sections are returned with warnings for missing or failed optional data.
+5. Frontend renders available cards, charts, tables, links, warnings, and empty states without fabricating data.
+
+## Local Setup
+
+Backend:
+
 ```bash
-git clone https://github.com/your-org/stockPredictionApp.git
-cd stockPredictionApp
+cd ai_stock_backend
+python -m venv ../venv
+../venv/python.exe -m pip install -r requirements.txt
+../venv/python.exe -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8001
 ```
 
-### 2. Backend setup
+Frontend:
+
 ```bash
-# 2.1 Create & activate virtual environment
-python3 -m venv .venv
-source .venv/bin/activate    # macOS/Linux
-.\.venv\Scripts\activate     # Windows
-
-# 2.2 Install Python dependencies
-pip install -r requirements.txt
-
-# 2.3 Launch FastAPI server
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
-```
-
-### 3. Frontend setup
-```bash
-cd frontend
-
-# 3.1 Install Node.js dependencies
+cd next-app
 npm install
-
-# 3.2 Start development server
 npm run dev
 ```
 
----
+Open `http://localhost:3000` and search for a ticker such as `MU`, `AAPL`, or `MSFT`.
 
-## Project Overview
+## Environment Variables
 
-Our Stock Prediction App combines financial data, news sentiment, and cutting-edge machine learning models to forecast future stock prices. It features:
-- A FastAPI backend for data ingestion, feature engineering, model inference, and sentiment analysis.
-- A Next.js/Tailwind-CSS frontend with intelligent search, interactive charts, and real-time prediction display.
+Frontend:
 
----
+- `FINNHUB_API_KEY` - optional server-side key for ticker search suggestions.
+- `NEXT_PUBLIC_API_BASE_URL` - backend base URL, defaults to `http://127.0.0.1:8001` in the stock page.
 
-## Backend Features
+Backend:
 
-- **Stock Price Prediction:**  
-  - Models: Linear Regression, Decision Tree, Random Forest, Gradient Boosting, XGBoost, CatBoost, AdaBoost, SVR, Stacking Ensemble  
-  - Trained on historical price & technical indicators to predict next-day direction (and price).
+- News/Reddit keys may exist from older experiments, but Phase 1 does not require Reddit and does not add paid AI or data-service keys.
 
-- **News & Headline Sentiment:**  
-  - Fetches recent headlines via NewsAPI.  
-  - Trains a headline sentiment model (~76% accuracy).
+Do not commit secret values.
 
-- **Reddit Sentiment:**  
-  - Uses PRAW to pull Reddit posts by ticker/keyword.  
-  - Classifies sentiment with TF-IDF + XGBoost (~76% accuracy).
+## Testing Commands
 
-- **Financial Statement Analysis:**  
-  - Retrieves annual reports via yfinance.  
-  - Correlates YOY metrics for feature selection.  
-  - Current model accuracy ~52% (work in progress).
+Frontend build/type check:
 
----
+```bash
+cd next-app
+npm run build
+```
 
-## Frontend Features
+Backend helper tests:
 
-- **Search Bar with Auto-Suggestion:**  
-  - Powered by Finnhub API for real-time ticker/company lookup.
+```bash
+cd ai_stock_backend
+../venv/python.exe -m unittest app.services.test_analysis_phase1
+```
 
-- **Dynamic Prediction Dashboard:**  
-  - Recharts visualizations of predicted vs. actual price.  
-  - Sentiment tag cloud & summary panels.  
-  - Sectioned view for each model’s output + price forecast.
+The checked-in virtual environment uses `venv/python.exe` at the repository root, not `venv/Scripts/python.exe`.
 
----
+Backend syntax check:
 
-## Tech Stack
+```bash
+cd ai_stock_backend
+../venv/python.exe -m py_compile app/services/analysis.py app/main.py app/api/routes.py
+```
 
-- **Languages & Frameworks:**  
-  - Python 3.9+ · FastAPI · Uvicorn  
-  - JavaScript/TypeScript · Next.js · React  
+## Manual Verification
 
-- **Data & ML:**  
-  - scikit-learn · XGBoost · CatBoost · SVR · pandas · NumPy  
-  - yfinance · NewsAPI · PRAW  
+Suggested Phase 1 smoke test:
 
-- **UI & Styling:**  
-  - Tailwind CSS · Recharts  
+1. Start the backend and frontend locally.
+2. Search for `MU`, `AAPL`, and `MSFT`.
+3. Try one invalid ticker and confirm the page shows a useful unavailable/error state.
+4. Confirm the company overview, price chart, financial performance, earnings, risk, and prediction sections render when data exists.
+5. Confirm optional sections such as news or missing fundamentals do not block the rest of the dashboard.
+6. Confirm Reddit is shown as disabled or omitted and does not affect loading.
+7. Open the Yahoo Finance and SEC links and confirm they match the selected ticker.
+8. Resize to a mobile width and check that tables/charts remain readable.
+9. Confirm Phase 2 AI controls are disabled and do not call an AI API.
 
-- **Deployment:**  
-  - Render.com (backend) · Vercel (frontend)  
+## Screenshots
 
----
+Screenshot placeholders:
 
-## Future Improvements
+- Homepage ticker search
+- Company overview and research snapshot
+- Price performance chart
+- Financial performance and earnings sections
+- Prediction / quantitative signal section
 
-- **Custom Timeframes:** User-selectable 1D, 1W, 1M, 1Y ranges.  
-- **Real-Time Streaming:** WebSocket updates for live data & sentiment.  
-- **Community Trending:** Show what stocks are trending in community by using NLP on reddit posts or other posts.
+## Known Limitations
 
----
+- The prediction model is experimental and should not be treated as guaranteed or as measured investment accuracy.
+- yfinance and free profile fields may be delayed, incomplete, or unavailable for some tickers.
+- Earnings surprise data is shown only when available; the app does not invent surprise values.
+- Reddit sentiment is intentionally disabled in Phase 1.
+- News sentiment can fail or return no headlines without blocking the rest of the dashboard.
+- The dashboard is not a substitute for reading SEC filings, company reports, or professional advice.
+- A root `package-lock.json` and `next-app/package-lock.json` both exist; `next.config.ts` pins the Turbopack root to the frontend app.
 
-## Credits
+## Future Roadmap
 
-- [AnkurZing — Financial News Sentiment (Kaggle)](https://www.kaggle.com/datasets/ankurzing/sentiment-analysis-for-financial-news)  
-- [US Stocks Fundamentals (Kaggle)](https://www.kaggle.com/datasets/usfundamentals/us-stocks-fundamentals)
+Phase 2 may add AI-assisted features, but they are not implemented yet:
 
----
+- AI explanations for financial metrics
+- AI earnings analysis
+- AI risk analysis
+- SEC filing analysis
+- Bull, base, and bear scenarios
+- Evidence-grounded company Q&A
+- More structured financial data
+- Optional asynchronous analysis jobs
+- Optional free or low-cost deployment improvements
 
-
-
+Any future AI or data provider should preserve the project requirement that Phase 1 remains free to run and clear about limitations.

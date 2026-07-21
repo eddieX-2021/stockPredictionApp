@@ -1,16 +1,4 @@
 {
-  "AAPL": {
-    "timestamp": "2026-01-15T19:07:33.569007",
-    "confidence": "low",
-    "direction_model": "HistGradient",
-    "magnitude_model": "CatBoost"
-  },
-  "MSFT": {
-    "timestamp": "2026-01-15T19:07:45.238507",
-    "confidence": "low",
-    "direction_model": "CatBoost",
-    "magnitude_model": "Ridge"
-  },
   "NVDA": {
     "timestamp": "2026-01-15T19:07:56.896109",
     "confidence": "low",
@@ -58,5 +46,11 @@
     "confidence": "low",
     "direction_model": "Logistic Regression",
     "magnitude_model": "CatBoost"
+  },
+  "AAPL": {
+    "timestamp": "2026-07-20T23:45:21.122642",
+    "confidence": "low",
+    "direction_model": "CatBoost",
+    "magnitude_model": "XGBoost"
   }
 }

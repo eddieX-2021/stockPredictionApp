@@ -1,20 +1,9 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
-
 export const metadata: Metadata = {
-  title: "Scout | Stock Signal Dashboard",
-  description: "Stock prediction dashboard using price history, news & Reddit sentiment, and financial reports.",
+  title: "Equity Research Workbench",
+  description: "Free Phase 1 stock research dashboard using price history, financial data, risk indicators, news sentiment, and an experimental prediction signal.",
 };
 
 export default function RootLayout({
@@ -23,10 +12,22 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
-        {children}
-      </body>
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+try {
+  var theme = window.localStorage.getItem("theme");
+  if (theme === "light" || theme === "dark") {
+    document.documentElement.dataset.theme = theme;
+  }
+} catch (error) {}
+            `,
+          }}
+        />
+      </head>
+      <body className="antialiased">{children}</body>
     </html>
   );
 }

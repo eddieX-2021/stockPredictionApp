@@ -1,15 +1,13 @@
 import type { NextConfig } from "next";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const appDir = dirname(fileURLToPath(import.meta.url));
 
 const nextConfig = {
-  images: {
-    remotePatterns: [
-      {
-        protocol: 'https',
-        hostname: 'localhost:3000',
-        port: '',
-        pathname: '/'
-      }
-    ]
-  }
-};
+  turbopack: {
+    root: appDir,
+  },
+} satisfies NextConfig;
+
 export default nextConfig;

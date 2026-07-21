@@ -1,25 +1,14 @@
+from datetime import datetime, timedelta
+
+import pytz
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# include any additional routers
 from app.api.routes import router
-
-# sentiment endpoints
-from app.headline.src.fetch_news import get_top_headlines
-from app.headline.src.predictor import predict_sentiments as predict_news_sentiments
-from app.reddit.src.fetch_reddit import fetch_reddit
-from app.reddit.src.predictor import predict_sentiments as predict_reddit_sentiments
-
-# financial statement endpoint
-from app.financial_statement.src.fetch_fin import fetch_financials
-from app.financial_statement.src.predictor import predict_stock_movement
-
-# CLI/train functionality
-from app.services.fetch_data import fetch_raw_stock_data, generate_features
 from app.mlm_predict.train_model import train_stock_models
-from datetime import datetime, timedelta
-import pytz
+from app.services.fetch_data import fetch_raw_stock_data, generate_features
+from app.services.json_safe import json_safe
 
 
 class TickerRequest(BaseModel):
@@ -27,12 +16,12 @@ class TickerRequest(BaseModel):
 
 
 app = FastAPI(
-    title="AI Stock Predictor",
-    description="Predict stock price movement and analyze sentiment.",
-    version="1.0.0"
+    title="Equity Research Dashboard API",
+    description="Phase 1 stock research dashboard API with price, financial, risk, sentiment, and experimental prediction signals.",
+    version="1.0.0",
 )
 
-# ─── CORS ────────────────────────────────────────────────────────────────────
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -45,91 +34,68 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# include any externally defined routes
 app.include_router(router)
 
 
-# ─── /api/news ───────────────────────────────────────────────────────────────
 @app.post("/api/news")
 async def news_sentiment(req: TickerRequest):
     t = req.ticker.strip().upper()
-    
+
     try:
+        from app.headline.src.fetch_news import get_top_headlines
+        from app.headline.src.predictor import predict_sentiments as predict_news_sentiments
+
         headlines = get_top_headlines(t)
-        
-        # Handle empty headlines gracefully
-        if not headlines or len(headlines) == 0:
+
+        if not headlines:
             print(f"No news headlines found for {t}")
             return {
                 "ticker": t,
                 "news": [],
-                "message": "No recent news articles found"
+                "message": "No recent news articles found",
             }
-        
+
         sentiments = predict_news_sentiments(headlines)
-        
+
         return {
             "ticker": t,
             "news": [
                 {"headline": h, "sentiment": s}
                 for h, s in zip(headlines, sentiments)
-            ]
+            ],
         }
     except Exception as e:
         print(f"Error in news_sentiment for {t}: {e}")
-        # Return empty results instead of crashing
         return {
             "ticker": t,
             "news": [],
-            "error": "Unable to fetch news at this time"
+            "error": "Unable to fetch news at this time",
         }
 
 
-# ─── /api/reddit ─────────────────────────────────────────────────────────────
 @app.post("/api/reddit")
 async def reddit_sentiment(req: TickerRequest):
     t = req.ticker.strip().upper()
-    
-    try:
-        posts = fetch_reddit(t)
-        
-        if not posts or len(posts) == 0:
-            print(f"⚠️ No Reddit posts found for {t}")
-            return {
-                "ticker": t,
-                "reddit": [],
-                "message": "No recent Reddit discussions found"
-            }
-        
-        sentiments = predict_reddit_sentiments(posts)
-        
-        return {
-            "ticker": t,
-            "reddit": [
-                {"post": p, "sentiment": s}
-                for p, s in zip(posts, sentiments)
-            ]
-        }
-    except Exception as e:
-        print(f"Error in reddit_sentiment for {t}: {e}")
-        return {
-            "ticker": t,
-            "reddit": [],
-            "error": "Unable to fetch Reddit data at this time"
-        }
+    return {
+        "ticker": t,
+        "reddit": [],
+        "disabled": True,
+        "message": "Live Reddit sentiment is disabled to avoid token/rate-limit crashes.",
+    }
 
-
-from app.services.json_safe import json_safe
 
 @app.post("/api/financials")
 async def financials(req: TickerRequest):
     t = req.ticker.strip().upper()
 
     try:
+        from app.financial_statement.src.fetch_fin import fetch_financials
+        from app.financial_statement.src.predictor import predict_stock_movement
+
         fin_data = fetch_financials(t)
         direction, confidence = predict_stock_movement(t, fin_data)
     except Exception as e:
-        print(f" Error in financials for {t}: {e}")
+        print(f"Error in financials for {t}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
     response = {
@@ -139,13 +105,12 @@ async def financials(req: TickerRequest):
         "confidence": confidence,
     }
 
-    # THIS PREVENTS THE CRASH
     return json_safe(response)
 
 
-# ─── CLI / TRAIN (optional) ──────────────────────────────────────────────────
+# CLI / train helper (optional)
 def main():
-    eastern = pytz.timezone('US/Eastern')
+    eastern = pytz.timezone("US/Eastern")
     end_date = (datetime.now(eastern) - timedelta(days=1)).strftime("%Y-%m-%d")
     start_date = (
         datetime.strptime(end_date, "%Y-%m-%d")
@@ -163,8 +128,8 @@ def main():
         print(f"Failed to generate features for {ticker}")
         return
 
-    best_model, scaler = train_stock_models(ticker, start_date, end_date)
-    if best_model is None or scaler is None:
+    result = train_stock_models(ticker, start_date, end_date)
+    if result is None:
         print(f"Failed to train model for {ticker}")
         return
 

@@ -4,3 +4,7 @@ __pycache__/
 *.pyo
 *.pyd
 .Python
+
+# Runtime data caches
+data/cache/
+data/yfinance_cache/

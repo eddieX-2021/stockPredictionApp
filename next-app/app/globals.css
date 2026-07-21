@@ -1,21 +1,51 @@
 @import "tailwindcss";
 
-:root {
-  --background: 255 255 255;
-  --foreground: 17 17 17;
-  --muted: 115 115 115;
-  --border: 230 230 230;
+:root,
+html[data-theme="light"] {
+  --background: 248 250 252;
+  --foreground: 17 24 39;
+  --muted: 83 92 111;
+  --border: 220 226 235;
   --card: 255 255 255;
+  --surface: 244 247 251;
+  --subtle: 238 243 248;
+  --chart-bg: 255 255 255;
+  --chart-grid: 226 232 240;
+  --chart-text: 83 92 111;
+  --chart-close: 4 120 87;
+  --chart-average: 217 119 6;
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
-    --background: 10 10 10;
-    --foreground: 237 237 237;
-    --muted: 170 170 170;
-    --border: 40 40 40;
-    --card: 18 18 18;
+  html:not([data-theme]) {
+    --background: 9 11 13;
+    --foreground: 241 245 249;
+    --muted: 165 174 187;
+    --border: 36 42 50;
+    --card: 18 21 25;
+    --surface: 24 29 35;
+    --subtle: 28 34 41;
+    --chart-bg: 18 21 25;
+    --chart-grid: 44 51 61;
+    --chart-text: 165 174 187;
+    --chart-close: 52 211 153;
+    --chart-average: 251 191 36;
   }
+}
+
+html[data-theme="dark"] {
+  --background: 9 11 13;
+  --foreground: 241 245 249;
+  --muted: 165 174 187;
+  --border: 36 42 50;
+  --card: 18 21 25;
+  --surface: 24 29 35;
+  --subtle: 28 34 41;
+  --chart-bg: 18 21 25;
+  --chart-grid: 44 51 61;
+  --chart-text: 165 174 187;
+  --chart-close: 52 211 153;
+  --chart-average: 251 191 36;
 }
 
 html, body {
@@ -25,16 +55,28 @@ html, body {
 body {
   background: rgb(var(--background));
   color: rgb(var(--foreground));
+  font-family: Arial, Helvetica, sans-serif;
 }
 
-/* Tailwind helper tokens (simple, clean design system) */
 .bg-bg { background-color: rgb(var(--background)); }
+.bg-card { background-color: rgb(var(--card)); }
+.bg-foreground { background-color: rgb(var(--foreground)); }
+.bg-surface { background-color: rgb(var(--surface)); }
+.bg-subtle { background-color: rgb(var(--subtle)); }
 .text-foreground { color: rgb(var(--foreground)); }
+.text-bg { color: rgb(var(--background)); }
 .text-muted-foreground { color: rgb(var(--muted)); }
 .border-border { border-color: rgb(var(--border)); }
-.bg-card { background-color: rgb(var(--card)); }
+.hover\:bg-surface:hover { background-color: rgb(var(--surface)); }
+.hover\:bg-subtle:hover { background-color: rgb(var(--subtle)); }
 
-/* Make autosuggest list match the new style */
+.chart-bg { fill: rgb(var(--chart-bg)); }
+.chart-grid { stroke: rgb(var(--chart-grid)); }
+.chart-text { fill: rgb(var(--chart-text)); }
+.chart-close { stroke: rgb(var(--chart-close)); }
+.chart-average { stroke: rgb(var(--chart-average)); }
+.chart-point { fill: rgb(var(--chart-close)); }
+
 .react-autosuggest__container {
   position: relative;
 }

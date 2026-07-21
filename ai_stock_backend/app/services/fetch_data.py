@@ -4,28 +4,69 @@ import yfinance as yf
 from app.services.cache import TTLCache
 _market_cache = TTLCache(ttl_seconds=24 * 3600)
 
-def fetch_raw_stock_data(ticker, start_date, end_date):
-    try:
-        stock_data = yf.download(
-            ticker,
+def _normalize_yfinance_frame(stock_data):
+    if stock_data is None or stock_data.empty:
+        return None
+
+    if isinstance(stock_data.columns, pd.MultiIndex):
+        stock_data.columns = stock_data.columns.get_level_values(0)
+
+    if "Close" not in stock_data.columns:
+        return None
+
+    stock_data = stock_data.dropna(subset=["Close"])
+    if "Volume" not in stock_data.columns:
+        stock_data["Volume"] = 0
+    return stock_data
+
+
+def fetch_raw_stock_data(ticker, start_date=None, end_date=None, min_rows=50):
+    """
+    Fetch stock history with a date-range request first, then period fallback.
+
+    The analysis dashboard should still work when a requested calendar range is
+    outside Yahoo's available data or when yfinance returns an empty frame.
+    """
+    symbol = str(ticker).upper().strip()
+    attempts = []
+
+    if start_date and end_date:
+        attempts.append(("date_range", lambda: yf.download(
+            symbol,
             start=start_date,
             end=end_date,
             progress=False,
-            auto_adjust=True
-        )
+            auto_adjust=True,
+            threads=False,
+        )))
 
-        if isinstance(stock_data.columns, pd.MultiIndex):
-            stock_data.columns = stock_data.columns.get_level_values(0)
+    attempts.extend([
+        ("download_5y", lambda: yf.download(
+            symbol,
+            period="5y",
+            progress=False,
+            auto_adjust=True,
+            threads=False,
+        )),
+        ("history_5y", lambda: yf.Ticker(symbol).history(
+            period="5y",
+            auto_adjust=True,
+        )),
+    ])
 
-        if stock_data.empty or len(stock_data) < 50:
-            raise ValueError("Insufficient stock data")
+    errors = []
+    for name, fetcher in attempts:
+        try:
+            stock_data = _normalize_yfinance_frame(fetcher())
+            if stock_data is not None and len(stock_data) >= min_rows:
+                return stock_data
+            rows = 0 if stock_data is None else len(stock_data)
+            errors.append(f"{name}: only {rows} rows")
+        except Exception as e:
+            errors.append(f"{name}: {e}")
 
-        return stock_data
-
-    except Exception as e:
-        print(f"Error fetching raw stock data: {e}")
-        return None
-
+    print(f"Error fetching raw stock data for {symbol}: {'; '.join(errors)}")
+    return None
 
 def fetch_market_context(start_date, end_date):
     """
@@ -382,7 +423,7 @@ def generate_features(stock_data):
             X = X.replace([np.inf, -np.inf], 0)
         
         market_feature_count = 6 if market_data else 0
-        print(f"✓ Generated {len(features)} BIAS-NEUTRAL features (including {market_feature_count} market context features)")
+        print(f"Generated {len(features)} BIAS-NEUTRAL features (including {market_feature_count} market context features)")
         
         return X, y, stock_data
         
