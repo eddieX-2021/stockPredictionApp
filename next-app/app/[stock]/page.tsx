@@ -11,6 +11,8 @@ import { SentimentBar } from "../components/ui/SentimentBar";
 import { StatCard } from "../components/ui/StatCard";
 import { ThemeToggle } from "../components/ui/ThemeToggle";
 
+const BACKEND_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "https://stockpredictionapp-4gfd.onrender.com";
+
 type Tone = "neutral" | "good" | "bad" | "warn";
 
 type SentimentCounts = {
@@ -531,7 +533,7 @@ export default function StockPage() {
   useEffect(() => {
     if (!T) return;
 
-    const API = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8001";
+    const API = BACKEND_URL;
     let cancelled = false;
 
     (async () => {
@@ -557,7 +559,7 @@ export default function StockPage() {
   useEffect(() => {
     if (!T) return;
 
-    const API = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8001";
+    const API = BACKEND_URL;
     let cancelled = false;
 
     (async () => {
@@ -700,8 +702,8 @@ export default function StockPage() {
             <div className="text-lg font-semibold">Analysis failed</div>
             <p className="mt-2 text-sm text-muted-foreground">{error}</p>
             <p className="mt-3 text-xs text-muted-foreground">
-              Check that the backend is running at http://127.0.0.1:8001 and try
-              http://127.0.0.1:8001/analysis?stock={T}.
+              Check that the backend is reachable at {BACKEND_URL} and try
+              {BACKEND_URL}/analysis?stock={T}.
             </p>
           </div>
         </div>
