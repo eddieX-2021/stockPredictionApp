@@ -1,3 +1,4 @@
+import re
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -6,7 +7,7 @@ from unittest.mock import patch
 from fastapi import HTTPException
 
 from app.api.routes import normalize_ticker_symbol, research_snapshot_payload
-from app.main import app
+from app.main import _default_origins, app
 from app.services.analysis import _analyst, _balance_sheet, _company_profile, _dividend, _earnings, _earnings_date_selection, _headline_relevance, _normalized_dividend_yield, _normalized_research_snapshot, _pct_change, _price_payload_from_history_and_quote, _risk_score, _run_section, _valuation, _weighted_score
 
 
@@ -102,6 +103,12 @@ class PhaseOneAnalysisHelpersTest(unittest.TestCase):
         self.assertEqual(snapshot["financial_metrics"]["revenue"]["latest_fiscal_year"]["period_type"], "annual")
         self.assertEqual(snapshot["balance_sheet"]["cash_and_equivalents"]["period_type"], "quarterly")
         self.assertEqual(snapshot["periods"]["balance_sheet"], "2026-05-28")
+    def test_cors_allows_current_vercel_preview_origin(self):
+        origin = "https://stock-prediction-k4jhyfvx1-eddies-projects-e605948d.vercel.app"
+        middleware = next(item for item in app.user_middleware if item.cls.__name__ == "CORSMiddleware")
+
+        self.assertIn(origin, _default_origins)
+        self.assertRegex(origin, re.compile(middleware.kwargs["allow_origin_regex"]))
     def test_phase2_and_mcp_routes_are_not_registered(self):
         paths = {getattr(route, "path", "") for route in app.routes}
 
