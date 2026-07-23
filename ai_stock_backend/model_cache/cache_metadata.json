@@ -11,12 +11,6 @@
     "direction_model": "CatBoost",
     "magnitude_model": "CatBoost"
   },
-  "GOOGL": {
-    "timestamp": "2026-01-15T19:08:19.274740",
-    "confidence": "low",
-    "direction_model": "HistGradient",
-    "magnitude_model": "CatBoost"
-  },
   "META": {
     "timestamp": "2026-01-15T19:08:31.344648",
     "confidence": "low",
@@ -52,5 +46,17 @@
     "confidence": "low",
     "direction_model": "CatBoost",
     "magnitude_model": "XGBoost"
+  },
+  "MU": {
+    "timestamp": "2026-07-21T18:49:27.590987",
+    "confidence": "low",
+    "direction_model": "CatBoost",
+    "magnitude_model": "CatBoost"
+  },
+  "GOOGL": {
+    "timestamp": "2026-07-21T18:51:10.394872",
+    "confidence": "low",
+    "direction_model": "LightGBM",
+    "magnitude_model": "CatBoost"
   }
 }

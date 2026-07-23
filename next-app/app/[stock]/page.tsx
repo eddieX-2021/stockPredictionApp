@@ -43,7 +43,14 @@ type PredictionData = {
   confidence: number;
   predicted_change_pct: number;
   predicted_price: number;
+  current_price?: number | null;
   system_confidence: string;
+  model_input_start_date?: string | null;
+  model_input_end_date?: string | null;
+  current_price_source?: string | null;
+  current_price_session?: string | null;
+  current_price_as_of?: string | null;
+  price_delay_note?: string | null;
   model_info: {
     direction_model: string;
     magnitude_model: string;
@@ -112,10 +119,22 @@ type AnalysisData = {
     previous_close: number | null;
     day_change_pct: number | null;
     currency: string;
+    source?: string | null;
+    session?: string | null;
+    as_of?: string | null;
+    is_realtime?: boolean;
+    delay_note?: string | null;
   } | null;
   price_history?: {
     available_ranges: string[];
     ranges: Record<string, PriceRange>;
+    history_last_trading_date?: string | null;
+    history_cache_as_of?: string | null;
+    trend_calculation_as_of?: string | null;
+    quote_as_of?: string | null;
+    stale_completed_trading_days?: number | null;
+    confidence?: string | null;
+    warnings?: string[];
   } | null;
   trend?: {
     label: string;
@@ -159,7 +178,11 @@ type AnalysisData = {
       margin_of_safety_pct: number | null;
       verdict: string;
       estimates: Record<string, number | null>;
-      assumptions: Record<string, number | null>;
+      assumptions: Record<string, number | string | null>;
+      blended_reference_value?: number | null;
+      intrinsic_estimates?: Record<string, number | null>;
+      analyst_reference?: number | null;
+      dcf_breakdown?: Record<string, number | string | boolean | string[] | null>;
       equation: string;
     };
     metrics: Record<string, number | string | null>;
@@ -167,7 +190,10 @@ type AnalysisData = {
   } | null;
   balance_sheet?: {
     score: number;
-    metrics: Record<string, number | null>;
+    period_end?: string | null;
+    source?: string | null;
+    warnings?: string[];
+    metrics: Record<string, number | string | null>;
     strengths: string[];
     concerns: string[];
   } | null;
@@ -183,7 +209,10 @@ type AnalysisData = {
   } | null;
   risk?: {
     score: number;
+    risk_level?: number;
+    risk_safety_score?: number;
     factors: string[];
+    components?: Array<Record<string, number | string | null>>;
   } | null;
   scores: {
     overall: number;
@@ -195,7 +224,6 @@ type AnalysisData = {
     balance_sheet?: number;
     dividend?: number;
     analyst?: number;
-    news?: number;
   };
   score_model?: {
     version: string;
@@ -245,6 +273,21 @@ function confidenceText(n: number | null | undefined) {
   return `${(n * 100).toFixed(1)}% model-provided confidence value`;
 }
 
+function sourceLabel(value: string | null | undefined) {
+  if (!value) return "Free Yahoo/yfinance";
+  return value.replace(/^yfinance_/, "yfinance ").replace(/_/g, " ");
+}
+
+function predictionModelNames(info: PredictionData["model_info"] | null | undefined) {
+  const names = [info?.direction_model, info?.magnitude_model].filter((name): name is string => Boolean(name));
+  const unique = Array.from(new Set(names));
+  return unique.length ? unique.join(" + ") : "Unavailable";
+}
+
+function predictionModelRoleText(info: PredictionData["model_info"] | null | undefined) {
+  if (!info?.direction_model && !info?.magnitude_model) return "Model names unavailable";
+  return info.direction_model === info.magnitude_model ? "Direction and magnitude model" : "Direction model + magnitude model";
+}
 function dateText(value: string | null | undefined) {
   if (!value) return "Unavailable";
   const date = new Date(value);
@@ -328,19 +371,6 @@ function MetricTile({
       <div className="mt-2 text-xl font-semibold tracking-tight">{value}</div>
       {subvalue ? <div className="mt-1 text-sm text-muted-foreground">{subvalue}</div> : null}
     </div>
-  );
-}
-
-function AiPlaceholder({ label }: { label: string }) {
-  return (
-    <button
-      type="button"
-      disabled
-      className="inline-flex cursor-not-allowed items-center rounded-md border border-border bg-subtle px-3 py-2 text-sm font-medium text-muted-foreground"
-      title="Coming in Phase 2"
-    >
-      {label} - Phase 2
-    </button>
   );
 }
 
@@ -604,7 +634,7 @@ export default function StockPage() {
       items.push({
         title: "Revenue Trend",
         value: describeChange("Revenue", revenue.change_pct),
-        detail: `${compact(revenue.latest)} latest reported revenue`,
+        detail: `${compact(revenue.latest)} latest available annual revenue`,
         tone: changeTone(revenue.change_pct),
       });
     }
@@ -614,7 +644,7 @@ export default function StockPage() {
       items.push({
         title: netIncome ? "Earnings Trend" : "EPS Trend",
         value: describeChange(netIncome ? "Net income" : "EPS", earningsMetric.change_pct),
-        detail: `${netIncome ? compact(earningsMetric.latest) : numberText(earningsMetric.latest)} latest reported value`,
+        detail: `${netIncome ? compact(earningsMetric.latest) : numberText(earningsMetric.latest)} latest available annual value`,
         tone: changeTone(earningsMetric.change_pct),
       });
     }
@@ -633,7 +663,7 @@ export default function StockPage() {
       items.push({
         title: "Cash Flow",
         value: fcf.latest > 0 ? "Free cash flow is positive." : "Free cash flow is negative.",
-        detail: `${compact(fcf.latest)} latest reported free cash flow`,
+        detail: `${compact(fcf.latest)} latest available annual free cash flow`,
         tone: fcf.latest > 0 ? "good" : "bad",
       });
     }
@@ -683,6 +713,7 @@ export default function StockPage() {
   const trend = analysis?.trend;
   const valuation = analysis?.valuation;
   const fairValue = valuation?.fair_value;
+  const dcfBreakdown = fairValue?.dcf_breakdown;
   const balanceSheet = analysis?.balance_sheet;
   const dividend = analysis?.dividend;
   const analyst = analysis?.analyst;
@@ -715,7 +746,6 @@ export default function StockPage() {
     { key: "risk", label: "Risk", score: analysis?.scores.risk, weight: weights.risk },
     { key: "liquidity", label: "Liquidity", score: analysis?.scores.liquidity, weight: weights.liquidity },
     { key: "analyst", label: "Analyst", score: analysis?.scores.analyst, weight: weights.analyst },
-    { key: "news", label: "News", score: analysis?.scores.news, weight: weights.news },
   ];
   const rankedScores = [...scoreEntries]
     .filter((entry) => typeof entry.score === "number")
@@ -730,6 +760,10 @@ export default function StockPage() {
   const predictionWarning = legacyWarnings.find((warning) => warning.includes("/predict")) ?? warningFor("prediction");
   const newsWarning = legacyWarnings.find((warning) => warning.includes("/api/news")) ?? warningFor("news");
   const financialWarning = legacyWarnings.find((warning) => warning.includes("/api/financials")) ?? analysis?.financials?.model?.error ?? analysis?.financials?.errors?.join(" ");
+  const priceSession = sourceLabel(analysis?.price?.session);
+  const priceSource = sourceLabel(analysis?.price?.source);
+  const priceAsOf = analysis?.price?.as_of ? dateTimeText(analysis.price.as_of) : "latest free quote";
+  const priceDelayNote = analysis?.price?.delay_note ?? "Free price quotes may be delayed or unavailable; verify real-time prices with an exchange or brokerage before trading.";
 
   return (
     <div className="min-h-screen bg-bg">
@@ -774,7 +808,7 @@ export default function StockPage() {
           <StatCard
             title="Current Price"
             value={money(analysis?.price?.current)}
-            subvalue={analysis ? `Today: ${pct(analysis.price?.day_change_pct)}` : "Latest close"}
+            subvalue={analysis ? `${priceSession}: ${pct(analysis.price?.day_change_pct)} as of ${priceAsOf}` : "Latest free quote"}
           />
           <StatCard
             title="Trend"
@@ -816,7 +850,8 @@ export default function StockPage() {
             <MetricTile title="Company" value={company?.name ?? T} subvalue={company?.industry ?? "Profile unavailable"} />
             <MetricTile title="Market Cap" value={compact(company?.market_cap)} subvalue="Free Yahoo profile data" />
             <MetricTile title="Last Updated" value={dateTimeText(analysis?.generated_at)} subvalue="Backend analysis timestamp" />
-            <MetricTile title="Phase 2 AI" value="Coming later" subvalue="Entry points are disabled in Phase 1" />
+            <MetricTile title="Price Source" value={priceSource} subvalue={`Market data as of ${priceAsOf}`} />
+            <MetricTile title="Structured Data" value="Ready" subvalue="Reusable Phase 1 snapshot endpoint" />
           </div>
         </section>
 
@@ -826,7 +861,6 @@ export default function StockPage() {
               <div className="text-lg font-semibold">Research snapshot</div>
               <p className="mt-1 text-sm text-muted-foreground">Rule-based observations from available reported data and calculated signals.</p>
             </div>
-            <AiPlaceholder label="Generate scenarios" />
           </div>
           {snapshotItems.length ? (
             <div className="mt-5 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
@@ -928,6 +962,7 @@ export default function StockPage() {
             <a href="#earnings" className="whitespace-nowrap rounded-md border border-border bg-card px-3 py-2 hover:bg-subtle">Earnings</a>
             <a href="#risk" className="whitespace-nowrap rounded-md border border-border bg-card px-3 py-2 hover:bg-subtle">Risk</a>
             <a href="#signals" className="whitespace-nowrap rounded-md border border-border bg-card px-3 py-2 hover:bg-subtle">Signals</a>
+            <a href="#ai-assistant" className="whitespace-nowrap rounded-md border border-border bg-card px-3 py-2 hover:bg-subtle">AI assistant</a>
             <a href="#previous-predictions" className="whitespace-nowrap rounded-md border border-border bg-card px-3 py-2 hover:bg-subtle">Previous predictions</a>
             <a href="#sources" className="whitespace-nowrap rounded-md border border-border bg-card px-3 py-2 hover:bg-subtle">Sources</a>
           </div>
@@ -943,7 +978,6 @@ export default function StockPage() {
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
-                <AiPlaceholder label="Explain score" />
                 <Badge tone={scoreTone(score)}>{analysis?.score_model?.version ?? "phase-1"}</Badge>
               </div>
             </div>
@@ -955,13 +989,12 @@ export default function StockPage() {
               <ScoreBar label="Risk" score={analysis?.scores.risk} weight={weights.risk} />
               <ScoreBar label="Liquidity" score={analysis?.scores.liquidity} weight={weights.liquidity} />
               <ScoreBar label="Analyst" score={analysis?.scores.analyst} weight={weights.analyst} />
-              <ScoreBar label="News" score={analysis?.scores.news} weight={weights.news} />
             </div>
           </div>
 
           <div className="rounded-lg border border-border bg-card p-6">
-            <div className="text-lg font-semibold">Fair value</div>
-            <div className="mt-3 text-3xl font-semibold">{money(fairValue?.estimated_fair_value)}</div>
+            <div className="text-lg font-semibold">Blended value reference</div>
+            <div className="mt-3 text-3xl font-semibold">{money(fairValue?.blended_reference_value ?? fairValue?.estimated_fair_value)}</div>
             <div className="mt-2 flex flex-wrap gap-2">
               <Badge tone={scoreTone(valuation?.score)}>{valuation?.label ?? "Unknown"}</Badge>
               <Badge tone={scoreTone(valuation?.score)}>{pct(fairValue?.margin_of_safety_pct)} margin</Badge>
@@ -980,7 +1013,6 @@ export default function StockPage() {
                 <p className="mt-1 text-sm text-muted-foreground">Historical close with 50-day moving average when available.</p>
               </div>
               <div className="flex flex-wrap gap-2">
-                <AiPlaceholder label="Explain price" />
                 {availableRanges.map((range) => (
                   <button
                     key={range}
@@ -998,20 +1030,20 @@ export default function StockPage() {
             </div>
             <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <MetricTile title="Range Return" value={pct(selectedRange?.return_pct)} subvalue={`${dateText(selectedRange?.start_date)} to ${dateText(selectedRange?.end_date)}`} />
-              <MetricTile title="1M Return" value={pct(trend?.returns?.["1m"])} subvalue="Recent trend" />
+              <MetricTile title="History Through" value={dateText(analysis?.price_history?.history_last_trading_date)} subvalue={`${analysis?.price_history?.confidence ?? "unknown"} history confidence`} />
               <MetricTile title="Avg Volume" value={compact(analysis?.volume_liquidity?.avg_volume_20d)} subvalue="20-day average" />
-              <MetricTile title="Volume Ratio" value={numberText(analysis?.volume_liquidity?.volume_ratio)} subvalue={analysis?.volume_liquidity?.volume_signal ?? "Volume confirmation"} />
+              <MetricTile title="Trend As Of" value={analysis?.price_history?.trend_calculation_as_of ? dateTimeText(analysis.price_history.trend_calculation_as_of) : "Unavailable"} subvalue={analysis?.price_history?.warnings?.[0] ?? "Same dataset as chart and moving averages"} />
             </div>
           </div>
 
           <div id="risk" className="rounded-lg border border-border bg-card p-6 scroll-mt-20">
             <div className="flex items-center justify-between gap-3">
               <div className="text-lg font-semibold">Risk indicators</div>
-              <AiPlaceholder label="Identify risks" />
             </div>
-            <div className="mt-3 flex items-center gap-3">
-              <div className="text-3xl font-semibold">{analysis?.risk?.score ?? "-"}</div>
-              <Badge tone={scoreTone(analysis?.risk?.score)}>Risk score</Badge>
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <div className="text-3xl font-semibold">{analysis?.risk?.risk_safety_score ?? analysis?.risk?.score ?? "-"}</div>
+              <Badge tone={scoreTone(analysis?.risk?.risk_safety_score ?? analysis?.risk?.score)}>Risk safety score</Badge>
+              <Badge tone="warn">Risk level {analysis?.risk?.risk_level ?? "-"}</Badge>
             </div>
             <div className="mt-4 space-y-2 text-sm text-muted-foreground">
               {(analysis?.risk?.factors?.length ? analysis.risk.factors : ["Risk data is limited for this ticker."]).map(
@@ -1031,7 +1063,6 @@ export default function StockPage() {
                 <div className="mt-1 text-sm text-muted-foreground">Reported fundamentals, simplified for dashboard review.</div>
               </div>
               <div className="flex flex-wrap gap-2">
-                <AiPlaceholder label="Explain metrics" />
                 <a href={yahooLink} target="_blank" rel="noreferrer noopener" className="rounded-md border border-border bg-subtle px-3 py-2 text-sm font-medium text-foreground hover:bg-surface">Full report</a>
                 {analysis?.financials ? (
                   <Badge tone={scoreTone(analysis.financials.score)}>{analysis.financials.score}/100</Badge>
@@ -1042,8 +1073,8 @@ export default function StockPage() {
               <div className="min-w-[640px]">
                 <div className="grid grid-cols-12 border-b border-border bg-subtle px-4 py-3 text-xs font-medium text-muted-foreground">
                   <div className="col-span-4">Metric</div>
-                  <div className="col-span-3 text-right">Latest</div>
-                  <div className="col-span-3 text-right">Previous</div>
+                  <div className="col-span-3 text-right">Latest available</div>
+                  <div className="col-span-3 text-right">Previous annual</div>
                   <div className="col-span-2 text-right">Change</div>
                 </div>
                 <div className="divide-y divide-border">
@@ -1115,21 +1146,30 @@ export default function StockPage() {
             {valuation ? (
               <>
                 <div className="mt-5 grid gap-3 sm:grid-cols-2">
-                  <MetricTile title="Estimated Fair Value" value={money(fairValue?.estimated_fair_value)} subvalue="Blended value model" />
-                  <MetricTile title="Margin of Safety" value={pct(fairValue?.margin_of_safety_pct)} subvalue="Fair value versus price" />
-                  <MetricTile title="DCF Value" value={money(fairValue?.estimates.dcf_fair_value)} subvalue="Cash-flow model" />
-                  <MetricTile title="EPS Value" value={money(fairValue?.estimates.earnings_power_value)} subvalue="EPS x fair PE" />
+                  <MetricTile title="Blended Reference" value={money(fairValue?.blended_reference_value ?? fairValue?.estimated_fair_value)} subvalue="DCF, EPS model, and analyst target" />
+                  <MetricTile title="Reference Margin" value={pct(fairValue?.margin_of_safety_pct)} subvalue="Blended reference versus price" />
+                  <MetricTile title="DCF Intrinsic" value={money(fairValue?.intrinsic_estimates?.dcf_value ?? fairValue?.estimates.dcf_fair_value)} subvalue="Cash-flow model, before analyst target" />
+                  <MetricTile title="EPS Value" value={money(fairValue?.intrinsic_estimates?.earnings_power_value ?? fairValue?.estimates.earnings_power_value)} subvalue="EPS x fair PE" />
                   <MetricTile title="Forward PE" value={numberText(valuation.metrics.forward_pe)} subvalue="Lower can be cheaper" />
                   <MetricTile title="PEG" value={numberText(valuation.metrics.peg_ratio)} subvalue="Growth-adjusted PE" />
                 </div>
                 <div className="mt-5 rounded-md bg-subtle p-4 text-sm text-muted-foreground">
                   <div className="font-medium text-foreground">Assumptions</div>
                   <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                    <div>Growth: {pct(fairValue?.assumptions.growth_rate_pct)}</div>
-                    <div>Discount: {pct(fairValue?.assumptions.discount_rate_pct)}</div>
-                    <div>Terminal: {pct(fairValue?.assumptions.terminal_growth_pct)}</div>
-                    <div>Fair PE: {numberText(fairValue?.assumptions.fair_pe_multiple)}</div>
+                    <div>Growth: {pct(typeof fairValue?.assumptions.growth_rate_pct === "number" ? fairValue.assumptions.growth_rate_pct : null)}</div>
+                    <div>Discount: {pct(typeof fairValue?.assumptions.discount_rate_pct === "number" ? fairValue.assumptions.discount_rate_pct : null)}</div>
+                    <div>Terminal: {pct(typeof fairValue?.assumptions.terminal_growth_pct === "number" ? fairValue.assumptions.terminal_growth_pct : null)}</div>
+                    <div>Fair PE: {numberText(typeof fairValue?.assumptions.fair_pe_multiple === "number" ? fairValue.assumptions.fair_pe_multiple : null)}</div>
+                    <div>Enterprise value: {compact(typeof dcfBreakdown?.enterprise_value === "number" ? dcfBreakdown.enterprise_value : null)}</div>
+                    <div>Liquid assets: {compact(typeof dcfBreakdown?.total_liquid_assets === "number" ? dcfBreakdown.total_liquid_assets : null)}</div>
+                    <div>Bridge debt: {compact(typeof dcfBreakdown?.debt_included_in_bridge === "number" ? dcfBreakdown.debt_included_in_bridge : null)}</div>
+                    <div>Equity value: {compact(typeof dcfBreakdown?.equity_value === "number" ? dcfBreakdown.equity_value : null)}</div>
+                    <div>Shares: {compact(typeof dcfBreakdown?.total_diluted_shares === "number" ? dcfBreakdown.total_diluted_shares : null)}</div>
+                    <div>Share source: {String(dcfBreakdown?.share_count_source ?? "Unavailable")}</div>
                   </div>
+                  {Array.isArray(dcfBreakdown?.warnings) && dcfBreakdown.warnings.length ? (
+                    <div className="mt-3 text-amber-700">{dcfBreakdown.warnings.join(" ")}</div>
+                  ) : null}
                 </div>
               </>
             ) : (
@@ -1146,7 +1186,6 @@ export default function StockPage() {
               <div className="text-lg font-semibold">Earnings</div>
               <p className="mt-1 text-sm text-muted-foreground">EPS, revenue, and earnings dates are shown only when available from the free data source.</p>
             </div>
-            <AiPlaceholder label="Analyze earnings" />
           </div>
           {earnings ? (
             <>
@@ -1176,12 +1215,15 @@ export default function StockPage() {
             {balanceSheet ? (
               <>
                 <div className="mt-5 grid gap-3">
-                  <MetricTile title="Net Cash" value={compact(balanceSheet.metrics.net_cash)} subvalue="Cash minus debt" />
-                  <MetricTile title="Current Ratio" value={numberText(balanceSheet.metrics.current_ratio)} subvalue="Short-term strength" />
-                  <MetricTile title="Debt / Cash" value={numberText(balanceSheet.metrics.debt_to_cash)} subvalue="Lower is better" />
+                  <MetricTile title="Cash-Only Net Debt" value={compact(typeof balanceSheet.metrics.strict_cash_net_debt === "number" ? balanceSheet.metrics.strict_cash_net_debt : null)} subvalue="Interest-bearing debt minus cash" />
+                  <MetricTile title="Liquidity Net Cash" value={compact(typeof balanceSheet.metrics.liquidity_adjusted_net_cash === "number" ? balanceSheet.metrics.liquidity_adjusted_net_cash : null)} subvalue="Cash plus eligible securities minus debt" />
+                  <MetricTile title="Liquid Assets" value={compact(typeof balanceSheet.metrics.total_liquid_assets === "number" ? balanceSheet.metrics.total_liquid_assets : null)} subvalue={`Period ${balanceSheet.period_end ?? "unavailable"}`} />
+                  <MetricTile title="Debt / Liquid Assets" value={numberText(balanceSheet.metrics.debt_to_liquid_assets)} subvalue="Leases shown separately when available" />
+                  <MetricTile title="Current Ratio" value={numberText(balanceSheet.metrics.current_ratio)} subvalue="Same reporting period" />
+                  <MetricTile title="Lease Liabilities" value={compact(typeof balanceSheet.metrics.lease_liabilities === "number" ? balanceSheet.metrics.lease_liabilities : null)} subvalue={balanceSheet.source ?? "Source unavailable"} />
                 </div>
                 <div className="mt-4 space-y-2 text-sm text-muted-foreground">
-                  {(balanceSheet.strengths.length ? balanceSheet.strengths : balanceSheet.concerns.length ? balanceSheet.concerns : ["Balance sheet data is limited."]).map((item, index) => (
+                  {[...(balanceSheet.strengths.length ? balanceSheet.strengths : balanceSheet.concerns.length ? balanceSheet.concerns : ["Balance sheet data is limited."]), ...(balanceSheet.warnings ?? [])].map((item, index) => (
                     <div key={index}>{item}</div>
                   ))}
                 </div>
@@ -1202,7 +1244,7 @@ export default function StockPage() {
               <>
                 <div className="mt-3 text-xl font-semibold">{dividend.label}</div>
                 <div className="mt-5 grid gap-3">
-                  <MetricTile title="Yield" value={pct(typeof dividend.metrics.dividend_yield === "number" ? dividend.metrics.dividend_yield * 100 : null)} subvalue="Annual dividend yield" />
+                  <MetricTile title="Yield" value={pct(typeof dividend.metrics.dividend_yield_pct === "number" ? dividend.metrics.dividend_yield_pct : typeof dividend.metrics.dividend_yield === "number" ? dividend.metrics.dividend_yield * 100 : null)} subvalue="Annual dividend yield" />
                   <MetricTile title="Payout Ratio" value={pct(typeof dividend.metrics.payout_ratio === "number" ? dividend.metrics.payout_ratio * 100 : null)} subvalue="Lower is safer" />
                 </div>
               </>
@@ -1234,57 +1276,42 @@ export default function StockPage() {
           </div>
         </section>
 
-        <section id="signals" className="grid gap-4 lg:grid-cols-2 scroll-mt-20">
-          <div className="rounded-lg border border-border bg-card p-6">
-            <div className="flex items-center justify-between">
-              <div className="text-lg font-semibold">News sentiment</div>
-              <Badge tone="neutral">{newsCounts.total} items</Badge>
+        <section id="signals" className="rounded-lg border border-border bg-card p-6 scroll-mt-20">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-lg font-semibold">Relevant news</div>
+              <p className="mt-1 text-sm text-muted-foreground">Headlines are informational in Phase 1 and do not contribute to the overall score.</p>
             </div>
-            <div className="mt-4 space-y-3">
-              <SentimentBar label="Positive" value={previousNewsCounts.positive} total={previousNewsCounts.total} />
-              <SentimentBar label="Neutral" value={previousNewsCounts.neutral} total={previousNewsCounts.total} />
-              <SentimentBar label="Negative" value={previousNewsCounts.negative} total={previousNewsCounts.total} />
-            </div>
-            <div className="mt-5 space-y-3">
-              {newsItems.length ? (
-                newsItems.slice(0, 5).map((item, index) => (
-                  <div key={index} className="rounded-lg border border-border bg-subtle p-3 text-sm">
-                    <div className="font-medium leading-snug">{item.headline}</div>
-                    <div className="mt-1 text-xs text-muted-foreground">{item.sentiment}</div>
-                  </div>
-                ))
-              ) : (
-                <EmptySection message="No news headlines were returned. This optional section does not block the dashboard." />
-              )}
-            </div>
+            <Badge tone="neutral">{newsItems.length} items</Badge>
           </div>
-
-          <div className="rounded-lg border border-border bg-card p-6">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="text-lg font-semibold">Prediction / quantitative signal</div>
-                <div className="mt-1 text-sm text-muted-foreground">Existing experimental model output, separated from financial data.</div>
-              </div>
-              {prediction ? <Badge tone={directionTone(prediction.direction)}>{prediction.direction}</Badge> : null}
-            </div>
-            {prediction ? (
-              <div className="mt-5 grid gap-4 sm:grid-cols-2">
-                <MetricTile title="Predicted Price" value={money(prediction.predicted_price)} subvalue="Existing model estimate" />
-                <MetricTile title="Predicted Move" value={pct(prediction.predicted_change_pct)} subvalue={confidenceText(prediction.confidence)} />
-                <MetricTile title="System Confidence" value={prediction.system_confidence?.toUpperCase() ?? "Unavailable"} subvalue="Model quality label" />
-                <MetricTile title="Model Cache" value={prediction.model_info?.cached ? "Cached" : "Fresh"} subvalue={`${prediction.model_info?.direction_model ?? "Direction model"} + ${prediction.model_info?.magnitude_model ?? "magnitude model"}`} />
-              </div>
+          <div className="mt-5 space-y-3">
+            {newsItems.length ? (
+              newsItems.slice(0, 5).map((item, index) => (
+                <div key={index} className="rounded-lg border border-border bg-subtle p-3 text-sm">
+                  <div className="font-medium leading-snug">{item.headline}</div>
+                </div>
+              ))
             ) : (
-              <p className="mt-4 text-sm text-muted-foreground">
-                The old prediction model did not return data. The rest of the analysis can still be used.
-              </p>
+              <EmptySection message="No sufficiently relevant recent headlines found." />
             )}
-            <div className="mt-5 rounded-md border border-amber-200 bg-amber-500/10 p-4 text-sm leading-relaxed text-amber-900">
-              This model output is experimental and should be considered one input among many. It is not financial advice.
-            </div>
           </div>
         </section>
-
+        <section id="ai-assistant" className="rounded-lg border border-border bg-card p-6 scroll-mt-20">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="max-w-3xl">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="text-lg font-semibold">AI Research Assistant</div>
+                <Badge tone="neutral">Future ChatGPT App</Badge>
+              </div>
+              <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                A ChatGPT App is under development. It will use this dashboard's structured market and financial data to explain company performance, valuation, risks, trends, earnings, and research scenarios inside ChatGPT.
+              </p>
+            </div>
+            <Link href="/chatgpt-app" className="rounded-md border border-border bg-subtle px-3 py-2 text-sm font-medium text-foreground hover:bg-surface">
+              View ChatGPT App
+            </Link>
+          </div>
+        </section>
         <section id="previous-predictions" className="rounded-lg border border-border bg-card p-6 scroll-mt-20">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
@@ -1306,7 +1333,9 @@ export default function StockPage() {
                 <div className="mt-4 grid gap-3">
                   <MetricTile title="Predicted Price" value={money(previousPrediction.predicted_price)} subvalue="From the preserved /predict model" />
                   <MetricTile title="Predicted Move" value={pct(previousPrediction.predicted_change_pct)} subvalue={confidenceText(previousPrediction.confidence)} />
-                  <MetricTile title="Models" value={previousPrediction.model_info?.direction_model ?? "Direction model"} subvalue={previousPrediction.model_info?.magnitude_model ?? "Magnitude model"} />
+                  <MetricTile title="Price Used" value={money((previousPrediction as PredictionData & { current_price?: number }).current_price ?? null)} subvalue={previousPrediction.current_price_as_of ? `Quote as of ${dateTimeText(previousPrediction.current_price_as_of)}` : sourceLabel(previousPrediction.current_price_source)} />
+                  <MetricTile title="Model Input Through" value={dateText(previousPrediction.model_input_end_date)} subvalue={previousPrediction.model_input_start_date ? `Training window starts ${dateText(previousPrediction.model_input_start_date)}` : "Prediction input timestamp"} />
+                  <MetricTile title="Models" value={predictionModelNames(previousPrediction.model_info)} subvalue={predictionModelRoleText(previousPrediction.model_info)} />
                 </div>
               ) : (
                 <SectionNotice
@@ -1374,9 +1403,11 @@ export default function StockPage() {
             <div>Sources loaded: {analysis?.data_quality?.sources?.join(", ") || "none yet"}</div>
             <div>Cache: {analysis?.data_quality?.cache?.status ?? "not loaded"}{typeof analysis?.data_quality?.cache?.ttl_seconds === "number" ? ` (${Math.round((analysis.data_quality.cache.ttl_seconds ?? 0) / 60)} min left)` : ""}</div>
             <div>Reddit: {analysis?.reddit?.disabled ? analysis.reddit.reason : "not requested"}</div>
+            <div>Price quote: {priceSource} ({priceSession}) as of {priceAsOf}</div>
             <div>Cost: no paid data, AI, hosting, or database services were added for Phase 1.</div>
           </div>
-          <div className="mt-3">{analysis?.summary.disclaimer ?? "This platform is for educational and research purposes and does not provide financial advice."}</div>
+          <div className="mt-3">{priceDelayNote}</div>
+          <div className="mt-2">{analysis?.summary.disclaimer ?? "This platform is for educational and research purposes and does not provide financial advice."}</div>
         </section>
       </main>
     </div>

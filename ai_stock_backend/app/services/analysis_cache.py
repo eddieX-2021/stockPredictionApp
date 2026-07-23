@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 from app.services.json_safe import json_safe
 
-CACHE_VERSION = "analysis-v2"
+CACHE_VERSION = "analysis-v4-phase1-consistency"
 DEFAULT_TTL_SECONDS = 6 * 60 * 60
 _CACHE_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "data", "cache")

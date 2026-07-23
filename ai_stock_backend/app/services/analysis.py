@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
@@ -25,15 +26,14 @@ except Exception:
 
 
 SCORE_WEIGHTS = {
-    "valuation": 0.22,
-    "fundamentals": 0.18,
-    "trend": 0.16,
-    "balance_sheet": 0.12,
-    "risk": 0.10,
-    "liquidity": 0.08,
-    "analyst": 0.06,
-    "news": 0.04,
-    "dividend": 0.04,
+    "valuation": 0.24,
+    "fundamentals": 0.20,
+    "trend": 0.18,
+    "balance_sheet": 0.14,
+    "risk": 0.12,
+    "liquidity": 0.06,
+    "analyst": 0.04,
+    "dividend": 0.02,
 }
 
 
@@ -71,6 +71,180 @@ def _pct_change(latest: Any, prev: Any) -> float | None:
         return None
     return ((latest_n - prev_n) / abs(prev_n)) * 100
 
+
+
+PRICE_DELAY_NOTE = (
+    "Price quotes come from free Yahoo/yfinance endpoints. They can be delayed, "
+    "adjusted, or unavailable and are not guaranteed real-time exchange data."
+)
+
+
+def _market_timestamp_to_iso(value: Any) -> str | None:
+    n = _as_float(value)
+    if n is None:
+        return None
+    if n > 10_000_000_000:
+        n = n / 1000
+    try:
+        return datetime.fromtimestamp(n, tz=pytz.utc).isoformat()
+    except Exception:
+        return None
+
+
+def _index_timestamp_to_iso(value: Any) -> str | None:
+    try:
+        if hasattr(value, "to_pydatetime"):
+            dt = value.to_pydatetime()
+        else:
+            dt = value
+        if getattr(dt, "tzinfo", None) is None:
+            dt = pytz.utc.localize(dt)
+        return dt.astimezone(pytz.utc).isoformat()
+    except Exception:
+        return None
+
+
+def _fast_info_get(fast_info: Any, key: str) -> Any:
+    try:
+        if hasattr(fast_info, "get"):
+            return fast_info.get(key)
+    except Exception:
+        pass
+    try:
+        return getattr(fast_info, key)
+    except Exception:
+        pass
+    try:
+        return fast_info[key]
+    except Exception:
+        return None
+
+
+def _latest_intraday_quote(ticker_obj: Any) -> dict[str, Any] | None:
+    for interval in ("1m", "5m", "15m"):
+        try:
+            frame = ticker_obj.history(
+                period="5d",
+                interval=interval,
+                prepost=True,
+                auto_adjust=False,
+            )
+        except Exception:
+            continue
+
+        if frame is None or getattr(frame, "empty", True) or "Close" not in frame:
+            continue
+
+        close = frame["Close"].dropna()
+        if close.empty:
+            continue
+
+        current = _as_float(close.iloc[-1])
+        if current is None:
+            continue
+
+        return {
+            "current": current,
+            "as_of": _index_timestamp_to_iso(close.index[-1]),
+            "source": f"yfinance_history_{interval}_prepost",
+            "session": "intraday_or_extended",
+        }
+
+    return None
+
+
+def _latest_quote(ticker: str) -> dict[str, Any] | None:
+    ticker_obj = yf.Ticker(ticker)
+    info: dict[str, Any] = {}
+    try:
+        info = ticker_obj.info or {}
+    except Exception:
+        info = {}
+
+    try:
+        fast_info = ticker_obj.fast_info
+    except Exception:
+        fast_info = {}
+
+    candidates: list[dict[str, Any]] = []
+
+    def add_candidate(source: str, price_key: str, time_key: str | None, session: str) -> None:
+        price = _as_float(info.get(price_key))
+        if price is None:
+            return
+        candidates.append({
+            "current": price,
+            "as_of": _market_timestamp_to_iso(info.get(time_key)) if time_key else None,
+            "source": source,
+            "session": session,
+        })
+
+    add_candidate("yfinance_info_post_market", "postMarketPrice", "postMarketTime", "after_hours")
+    add_candidate("yfinance_info_pre_market", "preMarketPrice", "preMarketTime", "pre_market")
+    add_candidate("yfinance_info_regular_market", "regularMarketPrice", "regularMarketTime", "regular")
+    add_candidate("yfinance_info_current_price", "currentPrice", "regularMarketTime", "regular")
+
+    fast_last = _as_float(_fast_info_get(fast_info, "last_price"))
+    if fast_last is not None:
+        candidates.append({
+            "current": fast_last,
+            "as_of": None,
+            "source": "yfinance_fast_info_last_price",
+            "session": "latest_available",
+        })
+
+    intraday = _latest_intraday_quote(ticker_obj)
+    if intraday:
+        candidates.append(intraday)
+
+    timed_candidates = [candidate for candidate in candidates if candidate.get("as_of")]
+    if timed_candidates:
+        selected = max(timed_candidates, key=lambda candidate: candidate["as_of"])
+    elif candidates:
+        selected = candidates[0]
+    else:
+        return None
+
+    previous_close = (
+        _as_float(info.get("regularMarketPreviousClose"))
+        or _as_float(info.get("previousClose"))
+        or _as_float(_fast_info_get(fast_info, "previous_close"))
+    )
+    currency = info.get("currency") or _fast_info_get(fast_info, "currency") or "USD"
+
+    return {
+        **selected,
+        "previous_close": previous_close,
+        "day_change_pct": _pct_change(selected.get("current"), previous_close),
+        "currency": currency,
+        "is_realtime": False,
+        "delay_note": PRICE_DELAY_NOTE,
+    }
+
+
+def _price_payload_from_history_and_quote(
+    history_current: float | None,
+    history_previous: float | None,
+    quote: dict[str, Any] | None,
+) -> dict[str, Any]:
+    current = _as_float((quote or {}).get("current"))
+    previous = _as_float((quote or {}).get("previous_close"))
+    if current is None:
+        current = history_current
+    if previous is None:
+        previous = history_previous
+
+    return {
+        "current": current,
+        "previous_close": previous,
+        "day_change_pct": _pct_change(current, previous),
+        "currency": (quote or {}).get("currency") or "USD",
+        "source": (quote or {}).get("source") or "yfinance_adjusted_daily_history",
+        "session": (quote or {}).get("session") or "latest_close",
+        "as_of": (quote or {}).get("as_of"),
+        "is_realtime": False,
+        "delay_note": PRICE_DELAY_NOTE,
+    }
 
 def _get_any(obj: dict[str, Any] | None, *keys: str) -> Any:
     if not obj:
@@ -141,8 +315,9 @@ def _run_section(
 
 def _price_trend(ticker: str) -> dict[str, Any]:
     eastern = pytz.timezone("US/Eastern")
-    end_date = (datetime.now(eastern) - timedelta(days=1)).strftime("%Y-%m-%d")
-    start_date = (datetime.strptime(end_date, "%Y-%m-%d") - timedelta(days=365 * 5)).strftime(
+    now_eastern = datetime.now(eastern)
+    end_date = (now_eastern + timedelta(days=1)).strftime("%Y-%m-%d")
+    start_date = (now_eastern - timedelta(days=365 * 5)).strftime(
         "%Y-%m-%d"
     )
 
@@ -152,8 +327,16 @@ def _price_trend(ticker: str) -> dict[str, Any]:
 
     close = stock_data["Close"]
     volume = stock_data["Volume"]
-    current = _as_float(close.iloc[-1])
-    previous = _as_float(close.iloc[-2]) if len(close) > 1 else None
+    history_current = _as_float(close.iloc[-1])
+    history_previous = _as_float(close.iloc[-2]) if len(close) > 1 else None
+    latest_quote = _latest_quote(ticker)
+    price_payload = _price_payload_from_history_and_quote(
+        history_current,
+        history_previous,
+        latest_quote,
+    )
+    current = _as_float(price_payload.get("current"))
+    previous = _as_float(price_payload.get("previous_close"))
 
     def ret(days: int) -> float | None:
         if len(close) <= days:
@@ -220,6 +403,25 @@ def _price_trend(ticker: str) -> dict[str, Any]:
         "1y": 252,
         "5y": 252 * 5,
     }
+    history_last_trading_date = history[-1]["date"] if history else None
+    completed_days_stale = None
+    history_warning = None
+    if history_last_trading_date:
+        try:
+            last_date = datetime.strptime(history_last_trading_date, "%Y-%m-%d").date()
+            today = now_eastern.date()
+            cursor = last_date + timedelta(days=1)
+            completed = 0
+            while cursor < today:
+                if cursor.weekday() < 5:
+                    completed += 1
+                cursor += timedelta(days=1)
+            completed_days_stale = completed
+            if completed > 1:
+                history_warning = f"Historical daily prices end on {history_last_trading_date}, more than one completed trading day behind the quote."
+        except Exception:
+            pass
+
     ranges = {}
     for key, days in range_days.items():
         points = history[-days:] if len(history) >= min(days, 21) else []
@@ -264,12 +466,7 @@ def _price_trend(ticker: str) -> dict[str, Any]:
             liquidity_score = 30
 
     return {
-        "price": {
-            "current": current,
-            "previous_close": previous,
-            "day_change_pct": day_change_pct,
-            "currency": "USD",
-        },
+        "price": price_payload,
         "trend": {
             "label": trend_label,
             "score": trend_score,
@@ -299,6 +496,13 @@ def _price_trend(ticker: str) -> dict[str, Any]:
         "price_history": {
             "available_ranges": list(ranges.keys()),
             "ranges": ranges,
+            "history_last_trading_date": history_last_trading_date,
+            "history_cache_as_of": datetime.now(pytz.utc).isoformat(),
+            "trend_calculation_as_of": datetime.now(pytz.utc).isoformat(),
+            "quote_as_of": price_payload.get("as_of"),
+            "stale_completed_trading_days": completed_days_stale,
+            "confidence": "low" if history_warning else "medium",
+            "warnings": [history_warning] if history_warning else [],
         },
     }
 
@@ -323,7 +527,16 @@ def _prediction(ticker: str) -> dict[str, Any]:
     if stock_data is None or stock_data.empty:
         raise ValueError("Unable to fetch current price for prediction")
 
-    current_price = float(stock_data["Close"].iloc[-1])
+    history_current = _as_float(stock_data["Close"].iloc[-1])
+    latest_quote = _latest_quote(ticker)
+    price_payload = _price_payload_from_history_and_quote(
+        history_current,
+        None,
+        latest_quote,
+    )
+    current_price = _as_float(price_payload.get("current"))
+    if current_price is None:
+        raise ValueError("Unable to resolve current price for prediction")
     predicted_change_pct = float(prediction["final_prediction_pct"])
     predicted_price = current_price * (1 + predicted_change_pct / 100)
     direction = prediction["direction"]
@@ -338,6 +551,10 @@ def _prediction(ticker: str) -> dict[str, Any]:
         "confidence": round(confidence, 4),
         "predicted_change_pct": round(predicted_change_pct, 2),
         "system_confidence": result["confidence"],
+        "current_price_source": price_payload.get("source"),
+        "current_price_session": price_payload.get("session"),
+        "current_price_as_of": price_payload.get("as_of"),
+        "price_delay_note": price_payload.get("delay_note"),
         "model_info": {
             "direction_model": result["direction"]["best_model_name"],
             "magnitude_model": result["magnitude"]["best_model_name"],
@@ -346,20 +563,60 @@ def _prediction(ticker: str) -> dict[str, Any]:
     }
 
 
-def _news(ticker: str) -> dict[str, Any]:
+def _company_terms(ticker: str, info: dict[str, Any] | None = None) -> set[str]:
+    info = info or {}
+    terms = {ticker.upper()}
+    for field in ("longName", "shortName"):
+        name = str(info.get(field) or "").strip()
+        if name:
+            terms.add(name.lower())
+            for token in re.findall(r"[A-Za-z][A-Za-z0-9]+", name):
+                if len(token) >= 4 and token.lower() not in {"inc", "corp", "corporation", "company", "class", "ordinary", "limited", "holdings"}:
+                    terms.add(token.lower())
+    return terms
+
+
+def _headline_relevance(ticker: str, headline: str, info: dict[str, Any] | None = None) -> dict[str, Any]:
+    text = str(headline or "")
+    lower = text.lower()
+    terms = _company_terms(ticker, info)
+    matched = []
+    for term in terms:
+        if term == ticker.upper():
+            if re.search(rf"(?<![A-Z0-9]){re.escape(term)}(?![A-Z0-9])", text.upper()):
+                matched.append(term)
+        elif term and term in lower:
+            matched.append(term)
+    score = min(100, 35 * len(set(matched)))
+    return {
+        "score": score,
+        "status": "relevant" if score >= 35 else "excluded_unrelated",
+        "matched_terms": sorted(set(matched)),
+    }
+
+
+def _news(ticker: str, info: dict[str, Any] | None = None) -> dict[str, Any]:
     from app.headline.src.fetch_news import get_top_headlines
     from app.headline.src.predictor import predict_sentiments
 
-    headlines = get_top_headlines(ticker)
-    sentiments = predict_sentiments(headlines) if headlines else []
+    raw_headlines = get_top_headlines(ticker) or []
+    relevant_items = []
+    excluded = []
+    for headline in raw_headlines:
+        relevance = _headline_relevance(ticker, headline, info)
+        item = {"headline": headline, "relevance": relevance, "source": "free_news_fetcher", "published_at": None}
+        if relevance["status"] == "relevant":
+            relevant_items.append(item)
+        else:
+            excluded.append(item)
 
-    items = [
-        {"headline": headline, "sentiment": sentiment}
-        for headline, sentiment in zip(headlines, sentiments)
-    ]
+    sentiments = predict_sentiments([item["headline"] for item in relevant_items]) if relevant_items else []
+    for item, sentiment in zip(relevant_items, sentiments):
+        item["sentiment"] = sentiment
+
     counts = {"positive": 0, "negative": 0, "neutral": 0, "total": 0}
-    for item in items:
-        s = str(item["sentiment"]).lower()
+    for item in relevant_items:
+        s = str(item.get("sentiment") or "neutral").lower()
         if "pos" in s:
             counts["positive"] += 1
         elif "neg" in s:
@@ -368,10 +625,18 @@ def _news(ticker: str) -> dict[str, Any]:
             counts["neutral"] += 1
         counts["total"] += 1
 
-    total = counts["total"]
-    score = 50 if total == 0 else _clamp_score(50 + ((counts["positive"] - counts["negative"]) / total) * 40)
-    return {"items": items, "sentiment_counts": counts, "score": score}
-
+    return {
+        "items": relevant_items,
+        "sentiment_counts": counts,
+        "score": 50,
+        "score_excluded_from_phase1": True,
+        "excluded_count": len(excluded),
+        "relevance_filter": {
+            "status": "active",
+            "minimum_score": 35,
+            "terms": sorted(_company_terms(ticker, info)),
+        },
+    }
 def _merge_statement_frame(frame: Any, latest: dict[str, Any], prev: dict[str, Any]) -> None:
     if frame is None or getattr(frame, "empty", True):
         return
@@ -468,6 +733,10 @@ def _local_fundamental_financials(ticker: str) -> dict[str, dict[str, Any]] | No
             "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
             "StockholdersEquity",
             "CommonStockholdersEquity",
+            "WeightedAverageNumberOfDilutedSharesOutstanding",
+            "WeightedAverageNumberOfSharesOutstandingDiluted",
+            "WeightedAverageDilutedSharesOutstanding",
+            "DilutedAverageShares",
         ]
         feature_columns: list[str] = []
         if model_path.exists():
@@ -511,6 +780,13 @@ def _local_fundamental_financials(ticker: str) -> dict[str, dict[str, Any]] | No
                 "Total Revenue": _first_row_value(row, "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet", "Revenues"),
                 "Diluted EPS": _first_row_value(row, "EarningsPerShareDiluted"),
                 "Basic EPS": _first_row_value(row, "EarningsPerShareBasic"),
+                "Diluted Average Shares": _first_row_value(
+                    row,
+                    "WeightedAverageNumberOfDilutedSharesOutstanding",
+                    "WeightedAverageNumberOfSharesOutstandingDiluted",
+                    "WeightedAverageDilutedSharesOutstanding",
+                    "DilutedAverageShares",
+                ),
                 "Net Income": _first_row_value(row, "NetIncomeLoss", "ProfitLoss"),
                 "Gross Profit": _first_row_value(row, "GrossProfit"),
                 "Operating Income": _first_row_value(row, "OperatingIncomeLoss"),
@@ -543,7 +819,7 @@ def _profile_financials(ticker: str) -> dict[str, dict[str, Any]] | None:
     if not info:
         return None
 
-    shares = _as_float(info.get("sharesOutstanding"))
+    profile_shares = _as_float(info.get("sharesOutstanding"))
     book_value = _as_float(info.get("bookValue"))
     revenue_growth = _as_float(info.get("revenueGrowth"))
     earnings_growth = _as_float(info.get("earningsGrowth"))
@@ -551,13 +827,14 @@ def _profile_financials(ticker: str) -> dict[str, dict[str, Any]] | None:
     latest = {
         "Total Revenue": _as_float(info.get("totalRevenue")),
         "Diluted EPS": _as_float(info.get("trailingEps")) or _as_float(info.get("forwardEps")),
+        "Diluted Average Shares": _as_float(info.get("sharesOutstanding")),
         "Net Income": _as_float(info.get("netIncomeToCommon")),
         "Gross Profit": _as_float(info.get("grossProfits")),
         "Operating Cash Flow": _as_float(info.get("operatingCashflow")),
         "Free Cash Flow": _as_float(info.get("freeCashflow")),
         "Total Debt": _as_float(info.get("totalDebt")),
         "Cash And Cash Equivalents": _as_float(info.get("totalCash")),
-        "Stockholders Equity": (book_value * shares) if book_value is not None and shares is not None else None,
+        "Stockholders Equity": (book_value * profile_shares) if book_value is not None and profile_shares is not None else None,
     }
     prev = {
         "Total Revenue": _previous_from_growth(latest["Total Revenue"], revenue_growth),
@@ -631,6 +908,7 @@ def _financials(ticker: str) -> dict[str, Any]:
     metrics = {
         "revenue": ("Total Revenue",),
         "eps": ("Diluted EPS", "Basic EPS"),
+        "diluted_shares": ("Diluted Average Shares",),
         "net_income": ("Net Income", "Net Income Common Stockholders"),
         "gross_profit": ("Gross Profit",),
         "operating_income": ("Operating Income", "Total Operating Income As Reported"),
@@ -708,6 +986,174 @@ def _timestamp_to_iso(value: Any) -> str | None:
         return None
 
 
+def _local_cik_for_ticker(ticker: str) -> str | None:
+    try:
+        import pandas as pd
+        from pathlib import Path
+
+        path = Path(__file__).resolve().parents[1] / "financial_statement" / "data" / "sec_company_tickers.csv"
+        if not path.exists():
+            return None
+        rows = pd.read_csv(path)
+        match = rows[rows["ticker"].astype(str).str.upper() == ticker.upper()]
+        if match.empty:
+            return None
+        cik = str(match.iloc[0]["company_id"]).strip()
+        return cik.zfill(10)
+    except Exception:
+        return None
+
+
+def _latest_fact_for_tags(facts: dict[str, Any], tags: list[str], unit: str, period_end: str | None = None) -> dict[str, Any] | None:
+    candidates: list[dict[str, Any]] = []
+    for tag in tags:
+        units = ((facts.get(tag) or {}).get("units") or {})
+        for item in units.get(unit, []):
+            end = item.get("end")
+            form = item.get("form")
+            if form not in ("10-Q", "10-K") or not end:
+                continue
+            if period_end is not None and end != period_end:
+                continue
+            value = _as_float(item.get("val"))
+            if value is None:
+                continue
+            candidates.append({"tag": tag, **item, "val": value})
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda item: (str(item.get("end") or ""), str(item.get("filed") or "")), reverse=True)[0]
+
+
+def _sec_balance_sheet_snapshot(ticker: str) -> dict[str, Any] | None:
+    cik = _local_cik_for_ticker(ticker)
+    if not cik:
+        return None
+    try:
+        import requests
+
+        url = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
+        headers = {"User-Agent": "stockPredictionApp educational local contact@example.com"}
+        payload = requests.get(url, headers=headers, timeout=12).json()
+    except Exception:
+        return None
+
+    facts = ((payload.get("facts") or {}).get("us-gaap") or {})
+    if not facts:
+        return None
+
+    anchor = _latest_fact_for_tags(facts, ["AssetsCurrent"], "USD")
+    if not anchor:
+        return None
+    period_end = anchor.get("end")
+    form = anchor.get("form")
+    filed = anchor.get("filed")
+
+    def usd(name: str, tags: list[str]) -> tuple[float | None, str | None]:
+        item = _latest_fact_for_tags(facts, tags, "USD", period_end)
+        if not item:
+            return None, None
+        return _as_float(item.get("val")), item.get("tag")
+
+    def shares(tags: list[str]) -> tuple[float | None, str | None]:
+        item = _latest_fact_for_tags(facts, tags, "shares", period_end)
+        if not item:
+            # Outstanding shares are often reported on a date shortly after quarter end.
+            item = _latest_fact_for_tags(facts, tags, "shares")
+        if not item:
+            return None, None
+        return _as_float(item.get("val")), item.get("tag")
+
+    cash, cash_tag = usd("cash", ["CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"])
+    marketable, marketable_tag = usd("marketable", ["MarketableSecuritiesCurrent", "ShortTermInvestments", "AvailableForSaleSecuritiesDebtSecuritiesCurrent"])
+    current_assets, current_assets_tag = usd("current_assets", ["AssetsCurrent"])
+    current_liabilities, current_liabilities_tag = usd("current_liabilities", ["LiabilitiesCurrent"])
+    short_debt, short_debt_tag = usd("short_debt", ["ShortTermBorrowings", "ShortTermDebtCurrent", "LongTermDebtCurrent", "DebtCurrent"])
+    long_debt, long_debt_tag = usd("long_debt", ["LongTermDebtNoncurrent", "LongTermDebtAndFinanceLeaseObligationsNoncurrent", "LongTermDebt"])
+    lease_current, lease_current_tag = usd("lease_current", ["OperatingLeaseLiabilityCurrent", "FinanceLeaseLiabilityCurrent"])
+    lease_noncurrent, lease_noncurrent_tag = usd("lease_noncurrent", ["OperatingLeaseLiabilityNoncurrent", "FinanceLeaseLiabilityNoncurrent"])
+    total_shares, shares_tag = shares(["EntityCommonStockSharesOutstanding", "CommonStocksIncludingAdditionalPaidInCapitalSharesOutstanding"])
+
+    short_debt = short_debt or 0
+    long_debt = long_debt or 0
+    lease_liabilities = (lease_current or 0) + (lease_noncurrent or 0) if lease_current is not None or lease_noncurrent is not None else None
+    total_interest_debt = short_debt + long_debt
+    total_liquid_assets = (cash or 0) + (marketable or 0) if cash is not None or marketable is not None else None
+    source_fields = {
+        "cash_and_equivalents": cash_tag,
+        "marketable_securities": marketable_tag,
+        "current_assets": current_assets_tag,
+        "current_liabilities": current_liabilities_tag,
+        "short_term_debt": short_debt_tag,
+        "long_term_debt": long_debt_tag,
+        "lease_current": lease_current_tag,
+        "lease_noncurrent": lease_noncurrent_tag,
+        "share_count": shares_tag,
+    }
+
+    return {
+        "period_end": period_end,
+        "form": form,
+        "filed": filed,
+        "cash_and_equivalents": cash,
+        "marketable_securities": marketable,
+        "total_liquid_assets": total_liquid_assets,
+        "current_assets": current_assets,
+        "current_liabilities": current_liabilities,
+        "current_ratio": current_assets / current_liabilities if current_assets is not None and current_liabilities not in (None, 0) else None,
+        "short_term_debt": short_debt,
+        "long_term_debt": long_debt,
+        "total_interest_bearing_debt": total_interest_debt,
+        "lease_liabilities": lease_liabilities,
+        "strict_cash_net_debt": total_interest_debt - cash if cash is not None else None,
+        "liquidity_adjusted_net_cash": total_liquid_assets - total_interest_debt if total_liquid_assets is not None else None,
+        "debt_to_cash": total_interest_debt / cash if cash not in (None, 0) else None,
+        "debt_to_liquid_assets": total_interest_debt / total_liquid_assets if total_liquid_assets not in (None, 0) else None,
+        "share_count": total_shares,
+        "share_count_source": shares_tag,
+        "source": "sec_companyfacts",
+        "source_fields": source_fields,
+        "warnings": [] if marketable is not None else ["SEC marketable securities field was unavailable for this period."],
+    }
+
+
+def _fallback_balance_sheet_snapshot(info: dict[str, Any], financials: dict[str, Any] | None) -> dict[str, Any] | None:
+    highlights = (financials or {}).get("highlights") or {}
+    cash = _as_float((highlights.get("cash") or {}).get("latest")) or _as_float(info.get("totalCash"))
+    debt = _as_float((highlights.get("total_debt") or {}).get("latest")) or _as_float(info.get("totalDebt"))
+    current_ratio = _as_float(info.get("currentRatio"))
+    current_liabilities = _as_float(info.get("totalCurrentLiabilities"))
+    current_assets = current_ratio * current_liabilities if current_ratio is not None and current_liabilities is not None else None
+    if not _has_known_value([cash, debt, current_ratio, current_assets, current_liabilities]):
+        return None
+    return {
+        "period_end": None,
+        "form": None,
+        "filed": None,
+        "cash_and_equivalents": cash,
+        "marketable_securities": None,
+        "total_liquid_assets": cash,
+        "current_assets": current_assets,
+        "current_liabilities": current_liabilities,
+        "current_ratio": current_ratio,
+        "short_term_debt": None,
+        "long_term_debt": debt,
+        "total_interest_bearing_debt": debt,
+        "lease_liabilities": None,
+        "strict_cash_net_debt": debt - cash if debt is not None and cash is not None else None,
+        "liquidity_adjusted_net_cash": cash - debt if debt is not None and cash is not None else None,
+        "debt_to_cash": debt / cash if debt is not None and cash not in (None, 0) else None,
+        "debt_to_liquid_assets": debt / cash if debt is not None and cash not in (None, 0) else None,
+        "share_count": _as_float(info.get("sharesOutstanding")),
+        "share_count_source": "yfinance_profile_sharesOutstanding",
+        "source": "yahoo_fallback_mixed_periods",
+        "source_fields": {
+            "cash_and_equivalents": "financials.cash.latest_or_yfinance.totalCash",
+            "total_interest_bearing_debt": "financials.total_debt.latest_or_yfinance.totalDebt",
+            "current_ratio": "yfinance.currentRatio",
+        },
+        "warnings": ["SEC same-period balance sheet was unavailable; using clearly labeled Yahoo/profile fallback that may mix periods."],
+    }
+
 def _company_profile(ticker: str, info: dict[str, Any], price: dict[str, Any] | None) -> dict[str, Any]:
     market_cap = _as_float(info.get("marketCap"))
     return {
@@ -728,6 +1174,60 @@ def _company_profile(ticker: str, info: dict[str, Any], price: dict[str, Any] | 
     }
 
 
+def _parse_provider_timestamp(value: Any) -> datetime | None:
+    n = _as_float(value)
+    if n is None or n <= 0:
+        return None
+    if n > 10_000_000_000:
+        n = n / 1000
+    try:
+        return datetime.fromtimestamp(n, tz=pytz.utc)
+    except Exception:
+        return None
+
+
+def _earnings_date_selection(info: dict[str, Any], now: datetime | None = None) -> dict[str, Any]:
+    now = now or datetime.now(pytz.utc)
+    if now.tzinfo is None:
+        now = pytz.utc.localize(now)
+
+    candidates: list[dict[str, Any]] = []
+    for key, status in (
+        ("earningsTimestamp", "estimated"),
+        ("earningsTimestampStart", "estimated"),
+        ("earningsTimestampEnd", "estimated"),
+    ):
+        dt = _parse_provider_timestamp(info.get(key))
+        if dt is not None:
+            candidates.append({"date": dt, "source_field": key, "status": status})
+
+    for value in info.get("earningsDate") or []:
+        dt = _parse_provider_timestamp(value)
+        if dt is not None:
+            candidates.append({"date": dt, "source_field": "earningsDate", "status": "estimated"})
+
+    unique = {}
+    for item in candidates:
+        unique[item["date"].isoformat()] = item
+    ordered = sorted(unique.values(), key=lambda item: item["date"])
+
+    # yfinance can return today's date as a placeholder. Do not present it as a real recent event.
+    past = [item for item in ordered if item["date"] < now and item["date"].date() != now.date()]
+    future = [item for item in ordered if item["date"] > now]
+    recent = past[-1] if past else None
+    next_item = future[0] if future else None
+    if recent and next_item and recent["date"].date() == next_item["date"].date():
+        recent = None
+
+    return {
+        "recent": recent,
+        "next": next_item,
+        "candidates": [
+            {"date": item["date"].isoformat(), "source_field": item["source_field"], "status": item["status"]}
+            for item in ordered
+        ],
+    }
+
 def _earnings(info: dict[str, Any], financials: dict[str, Any] | None) -> dict[str, Any] | None:
     highlights = (financials or {}).get("highlights") or {}
     eps = highlights.get("eps") or {}
@@ -737,12 +1237,14 @@ def _earnings(info: dict[str, Any], financials: dict[str, Any] | None) -> dict[s
     estimated_eps = _as_float(info.get("forwardEps"))
     reported_revenue = _as_float(revenue.get("latest")) or _as_float(info.get("totalRevenue"))
     previous_revenue = _as_float(revenue.get("previous"))
-    next_start = _timestamp_to_iso(info.get("earningsTimestampStart"))
-    next_end = _timestamp_to_iso(info.get("earningsTimestampEnd"))
-    recent_date = _timestamp_to_iso(info.get("earningsTimestamp"))
+    earnings_dates = _earnings_date_selection(info)
+    recent_item = earnings_dates.get("recent")
+    next_item = earnings_dates.get("next")
+    recent_date = recent_item["date"].isoformat() if recent_item else None
+    next_date = next_item["date"].isoformat() if next_item else None
 
     if not _has_known_value(
-        [reported_eps, estimated_eps, reported_revenue, previous_eps, previous_revenue, recent_date, next_start, next_end]
+        [reported_eps, estimated_eps, reported_revenue, previous_eps, previous_revenue, recent_date, next_date]
     ):
         return None
 
@@ -753,10 +1255,13 @@ def _earnings(info: dict[str, Any], financials: dict[str, Any] | None) -> dict[s
         "reported_revenue": reported_revenue,
         "revenue_change_pct": _pct_change(reported_revenue, previous_revenue),
         "recent_earnings_date": recent_date,
-        "next_earnings_date": next_start or next_end,
+        "next_earnings_date": next_date,
+        "recent_earnings_date_status": recent_item.get("status") if recent_item else None,
+        "next_earnings_date_status": next_item.get("status") if next_item else None,
+        "earnings_date_candidates": earnings_dates.get("candidates", []),
         "next_earnings_date_range": {
-            "start": next_start,
-            "end": next_end,
+            "start": next_date,
+            "end": next_date,
         },
         "surprise": {
             "eps_surprise_pct": None,
@@ -785,7 +1290,7 @@ def _fair_value_label(margin_of_safety_pct: float | None) -> str:
     return "Very overvalued"
 
 
-def _valuation(ticker: str, current_price: float | None, financials: dict[str, Any] | None) -> dict[str, Any] | None:
+def _valuation(ticker: str, current_price: float | None, financials: dict[str, Any] | None, balance_sheet: dict[str, Any] | None = None) -> dict[str, Any] | None:
     info = _safe_info(ticker)
     highlights = (financials or {}).get("highlights") or {}
 
@@ -797,14 +1302,19 @@ def _valuation(ticker: str, current_price: float | None, financials: dict[str, A
     dividend_yield = _as_float(info.get("dividendYield"))
     beta = _as_float(info.get("beta"))
     market_cap = _as_float(info.get("marketCap"))
-    shares = _as_float(info.get("sharesOutstanding"))
+    profile_shares = _as_float(info.get("sharesOutstanding"))
     target_mean_price = _as_float(info.get("targetMeanPrice"))
     current_price = current_price or _as_float(info.get("currentPrice")) or _as_float(info.get("regularMarketPrice"))
 
     fcf = _as_float((highlights.get("free_cash_flow") or {}).get("latest")) or _as_float(info.get("freeCashflow"))
     eps = _as_float((highlights.get("eps") or {}).get("latest")) or _as_float(info.get("trailingEps")) or _as_float(info.get("forwardEps"))
-    cash = _as_float((highlights.get("cash") or {}).get("latest")) or _as_float(info.get("totalCash"))
-    debt = _as_float((highlights.get("total_debt") or {}).get("latest")) or _as_float(info.get("totalDebt"))
+    balance_metrics = (balance_sheet or {}).get("metrics") or {}
+    cash = _as_float(balance_metrics.get("cash_and_equivalents")) or _as_float((highlights.get("cash") or {}).get("latest")) or _as_float(info.get("totalCash"))
+    marketable_securities = _as_float(balance_metrics.get("marketable_securities"))
+    total_liquid_assets = _as_float(balance_metrics.get("total_liquid_assets"))
+    short_term_debt = _as_float(balance_metrics.get("short_term_debt"))
+    long_term_debt = _as_float(balance_metrics.get("long_term_debt"))
+    debt = _as_float(balance_metrics.get("total_interest_bearing_debt")) or _as_float((highlights.get("total_debt") or {}).get("latest")) or _as_float(info.get("totalDebt"))
     revenue_growth_pct = _as_float((highlights.get("revenue") or {}).get("change_pct"))
     fcf_growth_pct = _as_float((highlights.get("free_cash_flow") or {}).get("change_pct"))
     info_growth = _as_float(info.get("earningsGrowth")) or _as_float(info.get("revenueGrowth"))
@@ -820,7 +1330,7 @@ def _valuation(ticker: str, current_price: float | None, financials: dict[str, A
             dividend_yield,
             beta,
             market_cap,
-            shares,
+            profile_shares,
             target_mean_price,
             fcf,
             eps,
@@ -845,16 +1355,72 @@ def _valuation(ticker: str, current_price: float | None, financials: dict[str, A
     discount_rate = 0.10
     terminal_growth = 0.025
     projection_years = 5
-    net_cash = (cash or 0) - (debt or 0)
+    cash_for_bridge = cash or 0
+    marketable_for_bridge = marketable_securities or 0
+    liquid_for_bridge = total_liquid_assets if total_liquid_assets is not None else cash_for_bridge + marketable_for_bridge
+    debt_for_bridge = debt or 0
+    net_cash = liquid_for_bridge - debt_for_bridge
+    diluted_shares = _as_float((highlights.get("diluted_shares") or {}).get("latest"))
+    current_share_count = _as_float(balance_metrics.get("share_count"))
+    shares_for_dcf = current_share_count or diluted_shares or profile_shares
+    if current_share_count is not None:
+        share_source = str(balance_metrics.get("share_count_source") or "sec_current_total_shares")
+    else:
+        share_source = "financial_statement_diluted_average_shares" if diluted_shares else "yfinance_profile_shares_outstanding"
 
     dcf_fair_value = None
-    if fcf is not None and fcf > 0 and shares not in (None, 0):
+    dcf_breakdown: dict[str, Any] = {
+        "normalized_free_cash_flow": fcf,
+        "forecast_growth_pct": growth_rate * 100,
+        "forecast_period_years": projection_years,
+        "discount_rate_pct": discount_rate * 100,
+        "terminal_growth_pct": terminal_growth * 100,
+        "pv_forecast_cash_flows": None,
+        "pv_terminal_value": None,
+        "enterprise_value": None,
+        "cash_and_equivalents": cash,
+        "eligible_marketable_securities": marketable_securities,
+        "total_liquid_assets": liquid_for_bridge,
+        "short_term_interest_bearing_debt": short_term_debt,
+        "long_term_interest_bearing_debt": long_term_debt,
+        "debt_included_in_bridge": debt,
+        "other_adjustments": 0,
+        "balance_sheet_period_end": (balance_sheet or {}).get("period_end"),
+        "balance_sheet_source": (balance_sheet or {}).get("source"),
+        "marketable_securities_included": marketable_securities is not None,
+        "debt_subtracted": debt,
+        "equity_value": None,
+        "total_diluted_shares": shares_for_dcf,
+        "share_count_source": share_source if shares_for_dcf is not None else None,
+        "per_share_estimate": None,
+        "warnings": [],
+    }
+    if discount_rate <= terminal_growth:
+        dcf_breakdown["warnings"].append("Discount rate must be greater than terminal growth.")
+    if diluted_shares is None and profile_shares is not None:
+        dcf_breakdown["warnings"].append(
+            "Diluted shares were unavailable; using yfinance profile sharesOutstanding fallback. For multi-class companies this may be less reliable."
+        )
+    if fcf is None or fcf <= 0:
+        dcf_breakdown["warnings"].append("Free cash flow is missing or non-positive, so DCF is unavailable.")
+    if shares_for_dcf in (None, 0):
+        dcf_breakdown["warnings"].append("Share count is missing or zero, so DCF is unavailable.")
+
+    if fcf is not None and fcf > 0 and shares_for_dcf not in (None, 0) and discount_rate > terminal_growth:
         projected = [fcf * ((1 + growth_rate) ** year) for year in range(1, projection_years + 1)]
         present_values = [cash_flow / ((1 + discount_rate) ** year) for year, cash_flow in enumerate(projected, start=1)]
         terminal_value = projected[-1] * (1 + terminal_growth) / (discount_rate - terminal_growth)
         present_terminal = terminal_value / ((1 + discount_rate) ** projection_years)
-        equity_value = sum(present_values) + present_terminal + net_cash
-        dcf_fair_value = equity_value / shares
+        enterprise_value = sum(present_values) + present_terminal
+        equity_value = enterprise_value + liquid_for_bridge - debt_for_bridge
+        dcf_fair_value = equity_value / shares_for_dcf
+        dcf_breakdown.update({
+            "pv_forecast_cash_flows": sum(present_values),
+            "pv_terminal_value": present_terminal,
+            "enterprise_value": enterprise_value,
+            "equity_value": equity_value,
+            "per_share_estimate": dcf_fair_value,
+        })
 
     fair_pe = _clamp(15 + (growth_rate * 100), 8, 35)
     earnings_power_value = eps * fair_pe if eps is not None and eps > 0 else None
@@ -900,12 +1466,21 @@ def _valuation(ticker: str, current_price: float | None, financials: dict[str, A
                 "terminal_growth_pct": terminal_growth * 100,
                 "projection_years": projection_years,
                 "fair_pe_multiple": fair_pe,
-                "net_cash": net_cash,
+                "liquidity_adjusted_net_cash": net_cash,
+                "share_count_source": share_source,
             },
-            "equation": "Fair value = 45% DCF value + 35% EPS x fair PE + 20% analyst target; margin of safety = (fair value - price) / price.",
+            "blended_reference_value": fair_value,
+            "intrinsic_estimates": {
+                "dcf_value": dcf_fair_value,
+                "earnings_power_value": earnings_power_value,
+            },
+            "analyst_reference": target_mean_price,
+            "dcf_breakdown": dcf_breakdown,
+            "equation": "Blended reference = 45% DCF value + 35% EPS x fair PE + 20% analyst target; margin = (blended reference - price) / price. Analyst target is not intrinsic value.",
         },
         "metrics": {
             "market_cap": market_cap,
+            "shares_used_for_dcf": shares_for_dcf,
             "trailing_pe": trailing_pe,
             "forward_pe": forward_pe,
             "peg_ratio": peg_ratio,
@@ -920,71 +1495,103 @@ def _valuation(ticker: str, current_price: float | None, financials: dict[str, A
         "note": "Rule-based valuation screen for research context, not a professional appraisal.",
     }
 
-def _balance_sheet(info: dict[str, Any], financials: dict[str, Any] | None) -> dict[str, Any] | None:
-    highlights = (financials or {}).get("highlights") or {}
-    cash = _as_float((highlights.get("cash") or {}).get("latest")) or _as_float(info.get("totalCash"))
-    debt = _as_float((highlights.get("total_debt") or {}).get("latest")) or _as_float(info.get("totalDebt"))
-    equity = _as_float((highlights.get("stockholders_equity") or {}).get("latest"))
-    assets = _as_float((highlights.get("total_assets") or {}).get("latest"))
-    liabilities = _as_float((highlights.get("total_liabilities") or {}).get("latest"))
-    current_ratio = _as_float(info.get("currentRatio"))
-    quick_ratio = _as_float(info.get("quickRatio"))
-    debt_to_equity = _as_float(info.get("debtToEquity"))
-    if debt_to_equity is not None and debt_to_equity > 20:
-        debt_to_equity = debt_to_equity / 100
-
-    if not _has_known_value([cash, debt, equity, assets, liabilities, current_ratio, quick_ratio, debt_to_equity]):
+def _balance_sheet(ticker: str, info: dict[str, Any], financials: dict[str, Any] | None) -> dict[str, Any] | None:
+    snapshot = _sec_balance_sheet_snapshot(ticker) or _fallback_balance_sheet_snapshot(info, financials)
+    if not snapshot:
         return None
 
-    debt_to_cash = debt / cash if debt is not None and cash not in (None, 0) else None
-    liabilities_to_assets = liabilities / assets if liabilities is not None and assets not in (None, 0) else None
-    equity_ratio = equity / assets if equity is not None and assets not in (None, 0) else None
+    cash = _as_float(snapshot.get("cash_and_equivalents"))
+    liquid_assets = _as_float(snapshot.get("total_liquid_assets"))
+    debt = _as_float(snapshot.get("total_interest_bearing_debt"))
+    current_ratio = _as_float(snapshot.get("current_ratio"))
+    debt_to_cash = _as_float(snapshot.get("debt_to_cash"))
+    debt_to_liquid_assets = _as_float(snapshot.get("debt_to_liquid_assets"))
+    liquidity_net_cash = _as_float(snapshot.get("liquidity_adjusted_net_cash"))
 
-    score = _average_known([
-        _score_from_ratio(debt_to_cash, 1.0, 2.5, 5.0),
-        _score_from_ratio(debt_to_equity, 0.8, 1.5, 3.0),
-        85 if current_ratio is not None and current_ratio >= 1.5 else 60 if current_ratio is not None and current_ratio >= 1.0 else 30 if current_ratio is not None else None,
-        85 if equity_ratio is not None and equity_ratio >= 0.45 else 60 if equity_ratio is not None and equity_ratio >= 0.25 else 35 if equity_ratio is not None else None,
-    ])
+    liquidity_score = None
+    if current_ratio is not None:
+        liquidity_score = 90 if current_ratio >= 2 else 75 if current_ratio >= 1.5 else 55 if current_ratio >= 1 else 30
+    debt_cash_score = _score_from_ratio(debt_to_cash, 0.5, 1.5, 3.0)
+    debt_liquid_score = _score_from_ratio(debt_to_liquid_assets, 0.4, 0.9, 1.5)
+    net_cash_score = 85 if liquidity_net_cash is not None and liquidity_net_cash >= 0 else 45 if liquidity_net_cash is not None else None
+    score = _average_known([liquidity_score, debt_cash_score, debt_liquid_score, net_cash_score])
 
     strengths = []
     concerns = []
+    if liquid_assets is not None and debt is not None:
+        if liquid_assets >= debt:
+            strengths.append("Liquid assets cover interest-bearing debt")
+        else:
+            concerns.append("Interest-bearing debt exceeds liquid assets")
     if cash is not None and debt is not None:
         if cash >= debt:
-            strengths.append("Cash covers total debt")
+            strengths.append("Cash alone covers interest-bearing debt")
         else:
-            concerns.append("Debt is higher than cash")
+            concerns.append("Cash-only net debt is positive")
     if current_ratio is not None:
         if current_ratio >= 1.5:
-            strengths.append("Current ratio is healthy")
+            strengths.append("Current ratio is healthy for the reported period")
         elif current_ratio < 1:
-            concerns.append("Current ratio is below 1")
-    if debt_to_equity is not None and debt_to_equity > 2:
-        concerns.append("Debt-to-equity is elevated")
+            concerns.append("Current liabilities exceed current assets")
+    if snapshot.get("lease_liabilities") is not None:
+        strengths.append("Lease liabilities are reported separately from interest-bearing debt")
+
+    metrics = {
+        "period_end": snapshot.get("period_end"),
+        "cash_and_equivalents": cash,
+        "marketable_securities": _as_float(snapshot.get("marketable_securities")),
+        "total_liquid_assets": liquid_assets,
+        "current_assets": _as_float(snapshot.get("current_assets")),
+        "current_liabilities": _as_float(snapshot.get("current_liabilities")),
+        "current_ratio": current_ratio,
+        "short_term_debt": _as_float(snapshot.get("short_term_debt")),
+        "long_term_debt": _as_float(snapshot.get("long_term_debt")),
+        "total_interest_bearing_debt": debt,
+        "lease_liabilities": _as_float(snapshot.get("lease_liabilities")),
+        "strict_cash_net_debt": _as_float(snapshot.get("strict_cash_net_debt")),
+        "liquidity_adjusted_net_cash": liquidity_net_cash,
+        "debt_to_cash": debt_to_cash,
+        "debt_to_liquid_assets": debt_to_liquid_assets,
+        "share_count": _as_float(snapshot.get("share_count")),
+        "cash": cash,
+        "total_debt": debt,
+        "net_cash": liquidity_net_cash,
+    }
 
     return {
         "score": score,
-        "metrics": {
-            "cash": cash,
-            "total_debt": debt,
-            "net_cash": (cash or 0) - (debt or 0) if cash is not None or debt is not None else None,
-            "current_ratio": current_ratio,
-            "quick_ratio": quick_ratio,
-            "debt_to_cash": debt_to_cash,
-            "debt_to_equity": debt_to_equity,
-            "liabilities_to_assets": liabilities_to_assets,
-            "equity_ratio": equity_ratio,
-        },
+        "period_end": snapshot.get("period_end"),
+        "source": snapshot.get("source"),
+        "source_fields": snapshot.get("source_fields") or {},
+        "warnings": snapshot.get("warnings") or [],
+        "leases_included_in_debt": False,
+        "metrics": metrics,
         "strengths": strengths,
         "concerns": concerns,
     }
 
+def _normalized_dividend_yield(raw_yield: Any, dividend_rate: Any = None, current_price: Any = None) -> float | None:
+    raw = _as_float(raw_yield)
+    rate = _as_float(dividend_rate)
+    price = _as_float(current_price)
+    calculated = rate / price if rate is not None and price not in (None, 0) else None
+    if calculated is not None and calculated >= 0:
+        if raw is None or raw <= 0 or raw > 0.20 or abs(raw - calculated) > 0.05:
+            return calculated
+    if raw is None:
+        return None
+    if raw > 1:
+        return raw / 100
+    return raw
 
-def _dividend(info: dict[str, Any]) -> dict[str, Any] | None:
-    dividend_yield = _as_float(info.get("dividendYield"))
+
+def _dividend(info: dict[str, Any], current_price: float | None = None) -> dict[str, Any] | None:
+    dividend_rate = _as_float(info.get("dividendRate"))
+    dividend_yield = _normalized_dividend_yield(info.get("dividendYield"), dividend_rate, current_price)
     payout_ratio = _as_float(info.get("payoutRatio"))
     five_year_avg_yield = _as_float(info.get("fiveYearAvgDividendYield"))
-    dividend_rate = _as_float(info.get("dividendRate"))
+    if five_year_avg_yield is not None and five_year_avg_yield > 1:
+        five_year_avg_yield = five_year_avg_yield / 100
 
     if not _has_known_value([dividend_yield, payout_ratio, five_year_avg_yield, dividend_rate]):
         return None
@@ -1004,12 +1611,13 @@ def _dividend(info: dict[str, Any]) -> dict[str, Any] | None:
         "label": label,
         "metrics": {
             "dividend_yield": dividend_yield,
+            "dividend_yield_pct": dividend_yield * 100 if dividend_yield is not None else None,
             "dividend_rate": dividend_rate,
             "payout_ratio": payout_ratio,
             "five_year_avg_yield": five_year_avg_yield,
+            "yield_convention": "decimal_internal_display_percent",
         },
     }
-
 
 def _analyst(info: dict[str, Any], current_price: float | None) -> dict[str, Any] | None:
     target_mean = _as_float(info.get("targetMeanPrice"))
@@ -1053,50 +1661,77 @@ def _risk_score(trend_risk: dict[str, Any] | None, valuation: dict[str, Any] | N
     beta = _as_float(((valuation or {}).get("metrics") or {}).get("beta"))
     balance_score = _as_float((balance_sheet or {}).get("score"))
 
-    score = 70
-    factors = []
+    components: list[dict[str, Any]] = []
+
+    def add_component(name: str, value: float | None, risk_level: float | None, weight: float, direction: str, note: str) -> None:
+        components.append({
+            "name": name,
+            "value": value,
+            "risk_level": _clamp_score(risk_level) if risk_level is not None else None,
+            "weight": weight,
+            "direction": direction,
+            "note": note,
+        })
+
+    vol_level = None
     if volatility is not None:
-        if volatility > 60:
-            score -= 25
-            factors.append("High recent volatility")
-        elif volatility > 35:
-            score -= 10
-            factors.append("Elevated recent volatility")
-        else:
-            score += 5
-            factors.append("Recent volatility looks manageable")
+        vol_level = _clamp((volatility - 15) * 1.6, 5, 95)
+    add_component("Realized volatility", volatility, vol_level, 0.24, "higher_value_higher_risk", "20-day annualized realized volatility")
 
+    drawdown_level = None
     if max_drawdown is not None:
-        if max_drawdown < -45:
-            score -= 15
-            factors.append("Large one-year drawdown")
-        elif max_drawdown > -20:
-            score += 5
-            factors.append("Drawdown has been contained")
+        drawdown_level = _clamp(abs(min(max_drawdown, 0)) * 1.6, 0, 95)
+    add_component("Maximum drawdown", max_drawdown, drawdown_level, 0.20, "more_negative_higher_risk", "Worst one-year drawdown from daily history")
 
+    beta_level = None
     if beta is not None:
-        if beta > 1.5:
-            score -= 15
-            factors.append("High beta versus market")
-        elif beta < 0.8:
-            score += 5
-            factors.append("Lower beta versus market")
+        beta_level = _clamp(50 + (beta - 1) * 35, 5, 95)
+    add_component("Beta", beta, beta_level, 0.16, "higher_value_higher_risk", "Market beta from free profile data")
 
+    debt_level = None
     if balance_score is not None:
-        if balance_score < 40:
-            score -= 10
-            factors.append("Balance sheet adds risk")
-        elif balance_score > 70:
-            score += 5
-            factors.append("Balance sheet reduces risk")
+        debt_level = _clamp(100 - balance_score, 0, 100)
+    add_component("Debt/liquidity", balance_score, debt_level, 0.20, "lower_balance_score_higher_risk", "Derived from same-period balance-sheet strength")
 
-    if not factors:
+    add_component("FCF stability", None, None, 0.10, "unavailable_neutral", "Needs multi-period FCF history metadata")
+    add_component("Earnings stability", None, None, 0.10, "unavailable_neutral", "Needs multi-period earnings metadata")
+
+    available = [item for item in components if item["risk_level"] is not None]
+    if not available:
         return {
             "score": 50,
+            "risk_level": 50,
+            "risk_safety_score": 50,
             "factors": ["Risk data is limited for this ticker."],
+            "components": components,
+            "data_window": (trend_risk or {}).get("data_window") or "limited",
         }
 
-    return {"score": _clamp_score(score), "factors": factors}
+    total_weight = sum(float(item["weight"]) for item in available)
+    risk_level = sum(float(item["risk_level"]) * float(item["weight"]) for item in available) / total_weight
+    risk_level_score = _clamp_score(risk_level)
+    safety_score = _clamp_score(100 - risk_level_score)
+
+    factors = []
+    if volatility is not None:
+        factors.append("Elevated recent volatility" if volatility > 35 else "Recent volatility looks manageable")
+    if max_drawdown is not None and max_drawdown < -35:
+        factors.append("Large one-year drawdown")
+    if beta is not None and beta > 1.3:
+        factors.append("Higher beta versus market")
+    if balance_score is not None and balance_score > 70:
+        factors.append("Balance sheet reduces risk")
+    elif balance_score is not None and balance_score < 45:
+        factors.append("Balance sheet adds risk")
+
+    return {
+        "score": safety_score,
+        "risk_level": risk_level_score,
+        "risk_safety_score": safety_score,
+        "factors": factors or ["Risk profile is mixed."],
+        "components": components,
+        "data_window": (trend_risk or {}).get("data_window") or "price history and available profile data",
+    }
 
 def _verdict(score: int) -> str:
     if score >= 80:
@@ -1110,6 +1745,177 @@ def _verdict(score: int) -> str:
     return "High risk"
 
 
+def _metric_snapshot(
+    value: Any,
+    unit: str,
+    source: str,
+    source_field: str,
+    period_type: str,
+    fiscal_period: str | None = None,
+    fiscal_period_end: str | None = None,
+    currency: str | None = "USD",
+    confidence: str = "medium",
+    warnings: list[str] | None = None,
+) -> dict[str, Any]:
+    valid = _as_float(value) is not None or (isinstance(value, str) and bool(value.strip()))
+    return {
+        "value": value,
+        "unit": unit,
+        "currency": currency,
+        "source": source,
+        "source_field": source_field,
+        "period_type": period_type,
+        "fiscal_period": fiscal_period,
+        "fiscal_period_end": fiscal_period_end,
+        "data_timestamp": datetime.now(pytz.utc).isoformat(),
+        "confidence": confidence if valid else "unavailable",
+        "available": valid,
+        "passed_validation": valid and not warnings,
+        "warnings": warnings or [],
+    }
+
+
+def _financial_metric_snapshots(financials: dict[str, Any] | None) -> dict[str, Any]:
+    if not financials:
+        return {}
+    source = financials.get("source") or "financials"
+    metrics = {}
+    labels = {
+        "revenue": ("usd", "Fiscal-year revenue"),
+        "eps": ("usd_per_share", "Fiscal-year diluted EPS"),
+        "net_income": ("usd", "Fiscal-year net income"),
+        "operating_income": ("usd", "Fiscal-year operating income"),
+        "operating_cash_flow": ("usd", "Fiscal-year operating cash flow"),
+        "free_cash_flow": ("usd", "Fiscal-year free cash flow"),
+        "cash": ("usd", "Fiscal-year cash if quarterly SEC data is unavailable"),
+        "total_debt": ("usd", "Fiscal-year debt if quarterly SEC data is unavailable"),
+        "diluted_shares": ("shares", "Fiscal-year diluted average shares"),
+    }
+    for key, (unit, label) in labels.items():
+        item = ((financials.get("highlights") or {}).get(key) or {})
+        metrics[key] = {
+            "latest_fiscal_year": _metric_snapshot(
+                item.get("latest"),
+                unit,
+                source,
+                key,
+                "annual",
+                "latest fiscal year",
+                None,
+                None if unit == "shares" else "USD",
+                "medium",
+            ),
+            "previous_fiscal_year": _metric_snapshot(
+                item.get("previous"),
+                unit,
+                source,
+                key,
+                "annual",
+                "previous fiscal year",
+                None,
+                None if unit == "shares" else "USD",
+                "medium",
+            ),
+            "change_pct": _metric_snapshot(
+                item.get("change_pct"),
+                "percent",
+                "calculated",
+                f"{key}.latest_vs_previous",
+                "annual_comparison",
+                "latest fiscal year vs previous fiscal year",
+                None,
+                None,
+                "medium",
+            ),
+            "label": label,
+        }
+    return metrics
+
+
+def _data_quality_checks(analysis: dict[str, Any]) -> list[str]:
+    warnings: list[str] = []
+    price = _as_float(((analysis.get("price") or {}).get("current")))
+    market_cap = _as_float(((analysis.get("company") or {}).get("market_cap")))
+    shares = _as_float((((analysis.get("balance_sheet") or {}).get("metrics") or {}).get("share_count")))
+    if price is not None and market_cap is not None and shares is not None and shares > 0:
+        implied = price * shares
+        if implied > 0 and abs(implied - market_cap) / implied > 0.35:
+            warnings.append("Market cap differs materially from price multiplied by reported share count.")
+
+    financials = analysis.get("financials") or {}
+    highlights = financials.get("highlights") or {}
+    eps = _as_float((highlights.get("eps") or {}).get("latest"))
+    net_income = _as_float((highlights.get("net_income") or {}).get("latest"))
+    diluted = _as_float((highlights.get("diluted_shares") or {}).get("latest"))
+    if eps is not None and net_income is not None and diluted not in (None, 0):
+        implied_eps = net_income / diluted
+        if abs(implied_eps - eps) > max(0.5, abs(eps) * 0.25):
+            warnings.append("Net income divided by diluted shares does not closely match reported EPS; EPS valuation confidence is lower.")
+
+    revenue = _as_float((highlights.get("revenue") or {}).get("latest"))
+    gross_profit = _as_float((highlights.get("gross_profit") or {}).get("latest"))
+    margins = financials.get("margins") or {}
+    gross_margin = _as_float(margins.get("gross_margin_pct"))
+    if revenue not in (None, 0) and gross_profit is not None and gross_margin is not None:
+        calculated = gross_profit / revenue * 100
+        if abs(calculated - gross_margin) > 0.5:
+            warnings.append("Gross margin does not reconcile with gross profit divided by revenue.")
+
+    bs = analysis.get("balance_sheet") or {}
+    if bs.get("source") == "yahoo_fallback_mixed_periods":
+        warnings.append("Balance-sheet values use Yahoo fallback and may not share one reporting period.")
+    return warnings
+
+
+def _normalized_research_snapshot(analysis: dict[str, Any]) -> dict[str, Any]:
+    price = analysis.get("price") or {}
+    balance_sheet = analysis.get("balance_sheet") or {}
+    earnings = analysis.get("earnings") or {}
+    return {
+        "symbol": analysis.get("ticker"),
+        "generated_at": analysis.get("generated_at"),
+        "market": {
+            "current_price": _metric_snapshot(
+                price.get("current"),
+                "usd",
+                price.get("source") or "yfinance",
+                "price.current",
+                "current_market",
+                None,
+                None,
+                price.get("currency") or "USD",
+                "low" if price.get("delay_note") else "medium",
+                [price.get("delay_note")] if price.get("delay_note") else [],
+            ),
+            "quote_as_of": price.get("as_of"),
+            "history_last_trading_date": ((analysis.get("price_history") or {}).get("history_last_trading_date")),
+        },
+        "periods": {
+            "balance_sheet": balance_sheet.get("period_end"),
+            "earnings_next": earnings.get("next_earnings_date"),
+            "price_quote": price.get("as_of"),
+            "price_history": ((analysis.get("price_history") or {}).get("history_last_trading_date")),
+            "financial_performance": "annual unless a metric states otherwise",
+        },
+        "financial_metrics": _financial_metric_snapshots(analysis.get("financials")),
+        "balance_sheet": {
+            key: _metric_snapshot(
+                value,
+                "ratio" if "ratio" in key or key.startswith("debt_to") else "usd" if isinstance(value, (int, float)) else "text",
+                balance_sheet.get("source") or "balance_sheet",
+                ((balance_sheet.get("source_fields") or {}).get(key) or key),
+                "quarterly" if balance_sheet.get("period_end") else "fallback",
+                None,
+                balance_sheet.get("period_end"),
+                "USD" if isinstance(value, (int, float)) and "ratio" not in key and not key.startswith("debt_to") else None,
+                "high" if balance_sheet.get("source") == "sec_companyfacts" else "low",
+                balance_sheet.get("warnings") or [],
+            )
+            for key, value in ((balance_sheet.get("metrics") or {}).items())
+        },
+        "validation_warnings": _data_quality_checks(analysis),
+    }
+
 def _weighted_score(scores: dict[str, int]) -> int:
     return _clamp_score(sum(scores.get(name, 50) * weight for name, weight in SCORE_WEIGHTS.items()))
 
@@ -1120,19 +1926,19 @@ def build_stock_analysis(ticker: str) -> dict[str, Any]:
     sources: list[str] = []
 
     market = _run_section(warnings, sources, "price_trend", lambda: _price_trend(ticker)) or {}
-    prediction = _run_section(warnings, sources, "prediction", lambda: _prediction(ticker))
-    news = _run_section(warnings, sources, "news", lambda: _news(ticker))
-    financials = _run_section(warnings, sources, "financials", lambda: _financials(ticker))
+    prediction = None
     info = _safe_info(ticker)
     if info:
         sources.append("yahoo_profile")
+    news = _run_section(warnings, sources, "news_headlines", lambda: _news(ticker, info))
+    financials = _run_section(warnings, sources, "financials", lambda: _financials(ticker))
 
     current_price = _as_float((market.get("price") or {}).get("current"))
     company = _company_profile(ticker, info, market.get("price"))
     earnings = _run_section(warnings, sources, "earnings", lambda: _earnings(info, financials))
-    valuation = _run_section(warnings, sources, "valuation", lambda: _valuation(ticker, current_price, financials))
-    balance_sheet = _run_section(warnings, sources, "balance_sheet", lambda: _balance_sheet(info, financials))
-    dividend = _run_section(warnings, sources, "dividend", lambda: _dividend(info))
+    balance_sheet = _run_section(warnings, sources, "balance_sheet", lambda: _balance_sheet(ticker, info, financials))
+    valuation = _run_section(warnings, sources, "valuation", lambda: _valuation(ticker, current_price, financials, balance_sheet))
+    dividend = _run_section(warnings, sources, "dividend", lambda: _dividend(info, current_price))
     analyst = _run_section(warnings, sources, "analyst", lambda: _analyst(info, current_price))
     risk = _risk_score(market.get("risk"), valuation, balance_sheet)
 
@@ -1144,8 +1950,7 @@ def build_stock_analysis(ticker: str) -> dict[str, Any]:
         "balance_sheet": int((balance_sheet or {}).get("score") or 50),
         "dividend": int((dividend or {}).get("score") or 50),
         "analyst": int((analyst or {}).get("score") or 50),
-        "risk": int(risk.get("score") or 50),
-        "news": int((news or {}).get("score") or 50),
+        "risk": int(risk.get("risk_safety_score") or risk.get("score") or 50),
     }
     overall_score = _weighted_score(category_scores)
 
@@ -1165,8 +1970,6 @@ def build_stock_analysis(ticker: str) -> dict[str, Any]:
             key_points.append(f"Valuation screen: {valuation['label'].lower()}.")
     if balance_sheet:
         key_points.append(f"Balance sheet strength scores {category_scores['balance_sheet']}/100.")
-    if prediction:
-        key_points.append(f"Old ML model bias: {prediction['direction']} ({prediction['predicted_change_pct']}%).")
     if not key_points:
         key_points.append("Only limited data was available for this ticker.")
 
@@ -1201,7 +2004,7 @@ def build_stock_analysis(ticker: str) -> dict[str, Any]:
         "score_model": {
             "version": "phase-1-rule-based-v1",
             "weights": SCORE_WEIGHTS,
-            "method": "Weighted 0-100 research snapshot from valuation, fundamentals, trend, balance sheet, risk, liquidity, analyst, news, and dividend signals.",
+            "method": "Weighted 0-100 Phase 1 research snapshot from valuation, fundamentals, trend, balance sheet, risk safety, liquidity, analyst, and dividend signals. Old prediction/news model outputs are excluded.",
         },
         "reddit": {
             "disabled": True,
@@ -1209,4 +2012,9 @@ def build_stock_analysis(ticker: str) -> dict[str, Any]:
         },
         "data_quality": {"sources": sources, "warnings": warnings},
     }
+    normalized_snapshot = _normalized_research_snapshot(response)
+    validation_warnings = normalized_snapshot.get("validation_warnings") or []
+    if validation_warnings:
+        response["data_quality"]["warnings"] = [*response["data_quality"].get("warnings", []), *validation_warnings]
+    response["normalized_snapshot"] = normalized_snapshot
     return json_safe(response)

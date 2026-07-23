@@ -2,18 +2,17 @@ import re
 from datetime import datetime, timedelta
 
 import pytz
-from fastapi import APIRouter, Query, HTTPException, Request
+from fastapi import APIRouter, Query, HTTPException
 
 from app.mlm_predict.train_model import train_stock_models, get_model_cache
 from app.services.fetch_data import fetch_raw_stock_data
-from app.services.analysis import build_stock_analysis
+from app.services.analysis import build_stock_analysis, _latest_quote, _price_payload_from_history_and_quote
 from app.services.analysis_cache import (
     clear_analysis_cache,
     clear_expired_analysis_cache,
     get_analysis_cache_stats,
     get_or_build_analysis,
 )
-from app.services.mcp_tools import MCP_TOOLS, SERVER_INFO, handle_mcp_request
 
 router = APIRouter()
 TICKER_PATTERN = re.compile(r"^[A-Z][A-Z0-9.-]{0,9}$")
@@ -52,6 +51,72 @@ async def analysis(
     return get_or_build_analysis(ticker, build_stock_analysis, force_refresh=force_refresh)
 
 
+
+def research_snapshot_payload(analysis_payload: dict) -> dict:
+    """Return the reusable Phase 1 snapshot without generative analysis."""
+    normalized = analysis_payload.get("normalized_snapshot") or {}
+    company = analysis_payload.get("company") or {}
+    price_history = analysis_payload.get("price_history") or {}
+    return {
+        "endpoint_version": "phase1-research-snapshot-v1",
+        "symbol": analysis_payload.get("ticker"),
+        "snapshot_generated_at": analysis_payload.get("generated_at"),
+        "company": company,
+        "current_or_latest_price": analysis_payload.get("price"),
+        "market_cap": company.get("market_cap"),
+        "score": analysis_payload.get("summary"),
+        "score_components": analysis_payload.get("scores"),
+        "score_model": analysis_payload.get("score_model"),
+        "main_rule_based_drivers": (analysis_payload.get("summary") or {}).get("key_points", []),
+        "trend": analysis_payload.get("trend"),
+        "price_history_metadata": {
+            "available_ranges": price_history.get("available_ranges", []),
+            "history_last_trading_date": price_history.get("history_last_trading_date"),
+            "history_cache_as_of": price_history.get("history_cache_as_of"),
+            "trend_calculation_as_of": price_history.get("trend_calculation_as_of"),
+            "quote_as_of": price_history.get("quote_as_of"),
+            "confidence": price_history.get("confidence"),
+            "warnings": price_history.get("warnings", []),
+        },
+        "financial_performance": analysis_payload.get("financials"),
+        "financial_periods": normalized.get("periods", {}),
+        "field_level_metadata": normalized,
+        "valuation": analysis_payload.get("valuation"),
+        "earnings": analysis_payload.get("earnings"),
+        "balance_sheet": analysis_payload.get("balance_sheet"),
+        "risk": analysis_payload.get("risk"),
+        "dividend": analysis_payload.get("dividend"),
+        "analyst": analysis_payload.get("analyst"),
+        "relevant_news": analysis_payload.get("news"),
+        "experimental_prediction_signals": {
+            "stock_price_model": analysis_payload.get("prediction"),
+            "financial_statement_model": (analysis_payload.get("financials") or {}).get("model"),
+            "news_sentiment": analysis_payload.get("news"),
+        },
+        "data_quality": analysis_payload.get("data_quality"),
+        "limitations": [
+            "Free Yahoo/yfinance quotes may be delayed or unavailable.",
+            "SEC and Yahoo financial fields vary between companies and periods.",
+            "Prediction models are experimental and are not investment advice.",
+        ],
+    }
+
+
+@router.get("/api/stocks/{symbol}/research-snapshot")
+async def research_snapshot(
+    symbol: str,
+    force_refresh: bool = Query(False, description="Bypass SQLite cache and rebuild analysis"),
+):
+    """
+    Structured Phase 1 research snapshot for future integrations.
+
+    This endpoint reuses the cached dashboard analysis. It does not call or host
+    any generative AI model.
+    """
+    ticker = normalize_ticker_symbol(symbol)
+    analysis_payload = get_or_build_analysis(ticker, build_stock_analysis, force_refresh=force_refresh)
+    return research_snapshot_payload(analysis_payload)
+
 @router.get("/analysis-cache/stats")
 async def analysis_cache_stats():
     """Get SQLite analysis cache statistics."""
@@ -80,30 +145,7 @@ async def analysis_cache_clear_all():
     return {"message": "All analysis cache entries cleared", "removed": removed}
 
 
-@router.get("/mcp")
-async def mcp_info():
-    """
-    Lightweight MCP info endpoint.
 
-    ChatGPT connector setup should use POST /mcp as the connector URL.
-    """
-    return {
-        "server": SERVER_INFO,
-        "endpoint": "/mcp",
-        "transport": "streamable-http-json-rpc",
-        "tools": [tool["name"] for tool in MCP_TOOLS],
-    }
-
-
-@router.post("/mcp")
-async def mcp_endpoint(request: Request):
-    """
-    Lightweight MCP-compatible JSON-RPC endpoint for local/free stock analysis tools.
-
-    Supports initialize, tools/list, and tools/call.
-    """
-    payload = await request.json()
-    return handle_mcp_request(payload)
 
 
 @router.get("/predict")
@@ -134,13 +176,22 @@ async def predict(stock: str = Query(..., description="Stock ticker symbol (e.g.
     # Make prediction using the built-in predict function
     prediction = result["predict"](latest_features)
 
-    # Fetch current price
+    # Fetch the latest free quote when available, falling back to adjusted daily history.
     try:
         price_start = (datetime.strptime(end_date, "%Y-%m-%d") - timedelta(days=90)).strftime("%Y-%m-%d")
         stock_data = fetch_raw_stock_data(ticker, price_start, end_date)
         if stock_data is None or stock_data.empty:
             raise ValueError("No stock data available")
-        current_price = float(stock_data["Close"].iloc[-1])
+        history_current = float(stock_data["Close"].iloc[-1])
+        price_payload = _price_payload_from_history_and_quote(
+            history_current,
+            None,
+            _latest_quote(ticker),
+        )
+        current_price = price_payload.get("current")
+        if current_price is None:
+            raise ValueError("No current price available")
+        current_price = float(current_price)
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -169,6 +220,12 @@ async def predict(stock: str = Query(..., description="Stock ticker symbol (e.g.
         "confidence": round(confidence, 4),
         "predicted_change_pct": round(predicted_change_pct, 2),
         "system_confidence": result["confidence"],
+        "model_input_start_date": start_date,
+        "model_input_end_date": end_date,
+        "current_price_source": price_payload.get("source"),
+        "current_price_session": price_payload.get("session"),
+        "current_price_as_of": price_payload.get("as_of"),
+        "price_delay_note": price_payload.get("delay_note"),
         "model_info": {
             "direction_model": result["direction"]["best_model_name"],
             "magnitude_model": result["magnitude"]["best_model_name"],
