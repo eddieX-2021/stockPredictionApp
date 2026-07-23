@@ -1,10 +1,21 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
 # Python cache
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 .Python
+.pytest_cache/
 
 # Runtime data caches
+catboost_info/
 data/cache/
 data/yfinance_cache/
+model_cache/
+
+# Logs
+*.log

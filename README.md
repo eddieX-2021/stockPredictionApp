@@ -1,4 +1,4 @@
-# Stock Prediction App
+# Stock Prediction App(1.3.0)
 
 ## Project Overview
 
